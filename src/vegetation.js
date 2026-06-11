@@ -304,6 +304,8 @@ function assembleTree(trunkGeo, crownGeo, points, place, uniforms) {
   }), placements, false);
   const crownMesh = buildInstances(crownGeo, leafMaterial(uniforms), placements, true);
   crownMesh.customDepthMaterial = leafDepthMaterial();
+  // GTAO のプリパスは alphaTest 非対応で葉カードが矩形の AO を焼くため除外する
+  crownMesh.userData.excludeFromGTAO = true;
   const group = new THREE.Group();
   [trunkMesh, crownMesh].forEach((m) => {
     m.castShadow = true;
@@ -413,6 +415,7 @@ function createBushes(uniforms) {
   }));
   const mesh = buildInstances(bush, leafMaterial(uniforms), placements);
   mesh.customDepthMaterial = leafDepthMaterial();
+  mesh.userData.excludeFromGTAO = true; // 樹冠と同じく矩形 AO を防ぐ
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   return mesh;
