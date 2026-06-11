@@ -390,6 +390,34 @@ function createBroadleaves(uniforms) {
   }), uniforms);
 }
 
+// 森の下草（低木）。葉クラスタ基盤を再利用し、森の下層に茂みの密度感を作る
+function createBushes(uniforms) {
+  const card = makeLeafCard(0.34, 0.5);
+  const bush = createLeafCluster(110, blobVolume(0, 0.45, 0, 0.75, 0.5, 0.75), card, 909);
+  sphericalNormals(bush, (x, y, z) => new THREE.Vector3(x, y - 0.2, z));
+  paintGradient(bush, 0x2a4a1c, 0x567f35, 0, 0.95);
+  applyBakedAO(bush);
+
+  // 森の中＋森の縁に集中させる（開けた草原には置かない）
+  const points = scatter(1800, (x, z, h) => {
+    if (h < WATER_LEVEL + 1.8 || h > 28) return false;
+    if (terrainSlope(x, z) > 0.8) return false;
+    return forestDensity(x, z) > 0.45 && rand() < 0.7;
+  });
+
+  const placements = computePlacements(points, () => ({
+    scale: 0.6 + rand() * 1.0,
+    scaleY: 0.7 + rand() * 0.5,
+    sink: -0.08,
+    tint: { h: 0.25 + rand() * 0.08, s: 0.3 + rand() * 0.2, l: 0.45 + rand() * 0.2 },
+  }));
+  const mesh = buildInstances(bush, leafMaterial(uniforms), placements);
+  mesh.customDepthMaterial = leafDepthMaterial();
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
 // 上向きの面に苔を、それ以外に露出岩肌を頂点カラーで塗り分ける（簡易 AO 込み）
 function paintRock(geometry) {
   const moss = new THREE.Color(0x4a5a32);
@@ -513,6 +541,7 @@ export function createVegetation(uniforms) {
   const group = new THREE.Group();
   group.add(createConifers(uniforms));
   group.add(createBroadleaves(uniforms));
+  group.add(createBushes(uniforms));
   group.add(createRocks());
   group.add(createFlowers());
   return group;
