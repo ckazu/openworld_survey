@@ -2,31 +2,34 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { WATER_LEVEL } from './terrain.js';
 
-// 高さフォグ: fog チャンクをグローバルにパッチし、フォグ密度を
-// 「ワールド高さで指数減衰」させる。湖面・谷に溜まる朝もやが出る。
-// fog: true の全マテリアル（地形・木・草・水・雲）に一括で効く。
-// マテリアルのコンパイル前（モジュール読み込み時）に差し替えること。
-THREE.ShaderChunk.fog_pars_vertex = /* glsl */ `
+// 物理ベースの空気遠近法（Hoffman & Preetham, SIGGRAPH 2002 の単一散乱）:
+// fog チャンクをグローバルにパッチし、消散 + Rayleigh/Mie の内散乱で霞ませる。
+// 視線と太陽のなす角 θ により、太陽方向は明るく暖かく・反対側は青灰色になる。
+// 既存の高さ変調（湖面・谷に溜まる朝もや）も密度に乗せる。
+// 太陽方向・色は静的なので GLSL 定数として焼き込む（uniform 伝搬が不要）。
+// fog: true の全マテリアルに一括で効く。各マテリアルのコンパイル前に呼ぶこと。
+function patchFogChunks(sunDir, sunColor) {
+  THREE.ShaderChunk.fog_pars_vertex = /* glsl */ `
 #ifdef USE_FOG
   varying float vFogDepth;
-  varying float vFogWorldY;
+  varying vec3 vFogWorldPos;
 #endif`;
-THREE.ShaderChunk.fog_vertex = /* glsl */ `
+  THREE.ShaderChunk.fog_vertex = /* glsl */ `
 #ifdef USE_FOG
   vFogDepth = - mvPosition.z;
   // transformed はカスタム ShaderMaterial（水・雲）に存在しないため
-  // 属性 position を使う（風の曲げ分の高さ誤差はもやには無視できる）
-  vec4 fogWorldPos = vec4( position, 1.0 );
+  // 属性 position を使う（風の曲げ分の誤差はフォグには無視できる）
+  vec4 fogWorldPos4 = vec4( position, 1.0 );
   #ifdef USE_INSTANCING
-    fogWorldPos = instanceMatrix * fogWorldPos;
+    fogWorldPos4 = instanceMatrix * fogWorldPos4;
   #endif
-  vFogWorldY = ( modelMatrix * fogWorldPos ).y;
+  vFogWorldPos = ( modelMatrix * fogWorldPos4 ).xyz;
 #endif`;
-THREE.ShaderChunk.fog_pars_fragment = /* glsl */ `
+  THREE.ShaderChunk.fog_pars_fragment = /* glsl */ `
 #ifdef USE_FOG
   uniform vec3 fogColor;
   varying float vFogDepth;
-  varying float vFogWorldY;
+  varying vec3 vFogWorldPos;
   #ifdef FOG_EXP2
     uniform float fogDensity;
   #else
@@ -34,18 +37,42 @@ THREE.ShaderChunk.fog_pars_fragment = /* glsl */ `
     uniform float fogFar;
   #endif
 #endif`;
-THREE.ShaderChunk.fog_fragment = /* glsl */ `
+  const sd = `vec3(${sunDir.x.toFixed(4)}, ${sunDir.y.toFixed(4)}, ${sunDir.z.toFixed(4)})`;
+  const sc = `vec3(${sunColor.r.toFixed(3)}, ${sunColor.g.toFixed(3)}, ${sunColor.b.toFixed(3)})`;
+  THREE.ShaderChunk.fog_fragment = /* glsl */ `
 #ifdef USE_FOG
   #ifdef FOG_EXP2
-    // 水面の高さを基準に、低いところほどフォグを濃くする（朝もや）
-    float fogHeight = exp( -max( 0.0, vFogWorldY - ${WATER_LEVEL.toFixed(2)} ) * 0.16 );
-    float fogDensityH = fogDensity * ( 1.0 + fogHeight * 2.6 );
-    float fogFactor = 1.0 - exp( - fogDensityH * fogDensityH * vFogDepth * vFogDepth );
+  {
+    // --- Hoffman & Preetham 2002: L = L0·ext + L_in·(1−ext) ---
+    const vec3 FOG_SUN_DIR = ${sd};
+    const vec3 FOG_SUN_E = ${sc} * 1.15;        // 太陽放射照度（トーン調整込み）
+    const vec3 FOG_RAYLEIGH_TINT = vec3(0.42, 0.60, 1.0); // 青空の散乱色
+    const vec3 FOG_MIE_TINT = vec3(1.0, 0.86, 0.66);      // 暖色のエアロゾル
+    vec3 fogView = vFogWorldPos - cameraPosition;
+    float fogDist = length(fogView);
+    float cosT = dot(fogView / max(fogDist, 1e-4), FOG_SUN_DIR);
+    // 水面の高さを基準に、低いところほど密度を上げる（朝もや）
+    float fogHeight = exp( -max( 0.0, vFogWorldPos.y - ${WATER_LEVEL.toFixed(2)} ) * 0.16 );
+    float dens = fogDensity * ( 1.0 + fogHeight * 1.8 );
+    float bR = dens * 0.62;                      // Rayleigh への配分
+    float bM = dens * 0.38;                      // Mie への配分
+    float ext = exp( -(bR + bM) * fogDist );
+    // 位相関数: Rayleigh + Henyey-Greenstein (g=0.5)
+    float phR = 0.0597 * ( 1.0 + cosT * cosT );
+    const float g = 0.5;
+    float phM = 0.0796 * ( 1.0 - g ) * ( 1.0 - g )
+              / pow( 1.0 + g * g - 2.0 * g * cosT, 1.5 );
+    vec3 inscatter = FOG_SUN_E
+      * ( bR * phR * FOG_RAYLEIGH_TINT + bM * phM * FOG_MIE_TINT ) / ( bR + bM )
+      * 6.5;
+    gl_FragColor.rgb = gl_FragColor.rgb * ext + inscatter * ( 1.0 - ext );
+  }
   #else
     float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+    gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
   #endif
-  gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
 #endif`;
+}
 
 // 空・太陽光・フォグ・環境マップ（IBL）をまとめてセットアップする
 export function createSky(scene, renderer) {
@@ -58,6 +85,9 @@ export function createSky(scene, renderer) {
   const phi = THREE.MathUtils.degToRad(90 - elevation);
   const theta = THREE.MathUtils.degToRad(azimuth);
   sun.setFromSphericalCoords(1, phi, theta);
+
+  // 空気遠近法のチャンクパッチ（地形・植生・水のマテリアル生成前に行う）
+  patchFogChunks(sun, new THREE.Color(0xffc587));
 
   const u = sky.material.uniforms;
   u.sunPosition.value.copy(sun);
@@ -100,8 +130,8 @@ export function createSky(scene, renderer) {
   const hemiLight = new THREE.HemisphereLight(0xc9b8d8, 0x6e5e3a, 0.4);
   scene.add(hemiLight);
 
-  // 夕方の暖色がかった空気遠近感
-  scene.fog = new THREE.FogExp2(0xe2c8a8, 0.0019);
+  // 空気遠近感の基準密度（色は空気遠近法シェーダが決めるため fogColor は未使用）
+  scene.fog = new THREE.FogExp2(0xe2c8a8, 0.0014);
 
   // プレイヤー追従でシャドウカメラを動かす
   function followPlayer(playerPos) {

@@ -23,8 +23,10 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.62; // 低い太陽に合わせて露出を補正
+// AgX（Sobotka 2022）: ACES よりハイライトの色相を保ったまま滑らかに
+// ロールオフする。夕日の飽和が「黄→白」に転ばず自然になる
+renderer.toneMapping = THREE.AgXToneMapping;
+renderer.toneMappingExposure = 0.95; // AgX は暗めだが、上げすぎると太陽直視で飽和域が広がる
 app.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -253,8 +255,8 @@ const gradePass = new ShaderPass({
         1.0
       );
       float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
-      c.rgb = mix(vec3(l), c.rgb, 1.16);            // 彩度を少し上げる
-      c.rgb = (c.rgb - 0.5) * 1.05 + 0.5 + 0.005;   // 微コントラスト
+      c.rgb = mix(vec3(l), c.rgb, 1.24);            // AgX は彩度低めなので強めに補正
+      c.rgb = (c.rgb - 0.5) * 1.1 + 0.5 + 0.003;    // 微コントラスト
       // シネマトーン: シャドウをわずかに持ち上げ、ハイライトを暖色へ
       c.rgb = c.rgb * 0.96 + 0.025;
       c.rgb *= vec3(1.03, 1.0, 0.96);
