@@ -5,6 +5,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
 import { createTerrain, terrainHeight, forestDensity } from './terrain.js';
 import { createWater } from './water.js';
 import { createSky } from './sky.js';
@@ -142,12 +143,22 @@ const shaftPass = new ShaderPass({
   `,
 });
 composer.addPass(shaftPass);
+
+// 控えめな被写界深度（写真のレンズ感）。遠景がわずかにぼけるだけに留め、
+// ゲームとしての視認性は保つ
+const bokehPass = new BokehPass(scene, camera, {
+  focus: 30.0,
+  aperture: 0.00004,
+  maxblur: 0.0045,
+});
+composer.addPass(bokehPass);
 composer.addPass(new OutputPass());
 
-// 仕上げのカラーグレーディング（彩度・コントラスト・ビネット）
+// 仕上げのカラーグレーディング + レンズ効果
+// （彩度・シネマトーン・ビネット・色収差・フィルムグレイン）
 const gradePass = new ShaderPass({
   name: 'ColorGradeShader',
-  uniforms: { tDiffuse: { value: null } },
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 } },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
     void main() {
@@ -157,14 +168,31 @@ const gradePass = new ShaderPass({
   `,
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
+    uniform float uTime;
     varying vec2 vUv;
+    float grain(vec2 p) {
+      return fract(sin(dot(p, vec2(12.9898, 78.233)) + uTime * 61.0) * 43758.5453);
+    }
     void main() {
-      vec4 c = texture2D(tDiffuse, vUv);
+      // 色収差: 画面端ほど RGB をラジアルにずらす（微量）
+      vec2 toCenter = vUv - 0.5;
+      float d = length(toCenter);
+      vec2 ca = toCenter * d * d * 0.018;
+      vec4 c = vec4(
+        texture2D(tDiffuse, vUv - ca).r,
+        texture2D(tDiffuse, vUv).g,
+        texture2D(tDiffuse, vUv + ca).b,
+        1.0
+      );
       float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
       c.rgb = mix(vec3(l), c.rgb, 1.16);            // 彩度を少し上げる
       c.rgb = (c.rgb - 0.5) * 1.05 + 0.5 + 0.005;   // 微コントラスト
-      float d = distance(vUv, vec2(0.5));
-      c.rgb *= 1.0 - smoothstep(0.5, 1.0, d) * 0.22; // ビネット
+      // シネマトーン: シャドウをわずかに持ち上げ、ハイライトを暖色へ
+      c.rgb = c.rgb * 0.96 + 0.025;
+      c.rgb *= vec3(1.03, 1.0, 0.96);
+      c.rgb *= 1.0 - smoothstep(0.5, 1.0, d) * 0.24; // ビネット
+      // フィルムグレイン（暗部ほど目立つ・微量）
+      c.rgb += (grain(vUv) - 0.5) * 0.028 * (1.0 - l * 0.6);
       gl_FragColor = c;
     }
   `,
@@ -211,6 +239,7 @@ renderer.setAnimationLoop(() => {
 
   sharedUniforms.uTime.value = time;
   sharedUniforms.uPlayerPos.value.set(camera.position.x, camera.position.z);
+  gradePass.uniforms.uTime.value = time;
   water.userData.update(time);
   if (!window.__demo?.freeze) player.update(dt);
   grass.update(camera.position);
