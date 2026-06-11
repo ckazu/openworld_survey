@@ -80,6 +80,22 @@ gtaoPass.updateGtaoMaterial({
 gtaoPass.updatePdMaterial({
   lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, radiusExponent: 1, rings: 2, samples: 16,
 });
+// GTAO の法線/深度プリパスは alphaTest を考慮できず、葉カードが矩形のまま
+// AO に焼かれて黒い矩形が浮く。プリパスの間だけ葉メッシュを非表示にする
+// （葉ピクセルの AO は背後のジオメトリ基準になるが、矩形アーティファクトより自然）
+const gtaoHidden = [];
+const gtaoRender = gtaoPass.render.bind(gtaoPass);
+gtaoPass.render = function (...args) {
+  scene.traverse((o) => {
+    if (o.userData.excludeFromGTAO && o.visible) {
+      o.visible = false;
+      gtaoHidden.push(o);
+    }
+  });
+  gtaoRender(...args);
+  for (const o of gtaoHidden) o.visible = true;
+  gtaoHidden.length = 0;
+};
 composer.addPass(gtaoPass);
 
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(size.width, size.height), 0.25, 0.7, 0.85);
