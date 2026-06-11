@@ -96,10 +96,13 @@ function leafMaterial(uniforms, extra = {}) {
       ).replace(
         '#include <opaque_fragment>',
         `{
+          // 薄板透過の近似（Barré-Brisebois & Bouchard, GDC 2011）:
+          // 透過ローブを法線で歪ませることで「裏面に光が回り込む」が正しく出る
           vec3 sunView = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
           vec3 viewDir = normalize(vViewPosition);
-          float trans = pow(max(dot(-viewDir, sunView), 0.0), 4.0);
-          outgoingLight += uSunColor * vec3(0.5, 1.0, 0.35) * trans * 0.4 * diffuseColor.rgb;
+          vec3 transH = normalize(sunView + normal * 0.4);
+          float trans = pow(clamp(dot(viewDir, -transH), 0.0, 1.0), 3.0);
+          outgoingLight += uSunColor * vec3(0.5, 1.0, 0.35) * trans * 0.5 * diffuseColor.rgb;
         }
         #include <opaque_fragment>`
       );

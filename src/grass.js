@@ -135,7 +135,8 @@ function createGrassMaterial(uniforms) {
         gl_Position = projectionMatrix * mvPosition;`
       );
 
-    // サブサーフェス透過: カメラが太陽を向く逆光のとき、薄い葉を光が透ける。
+    // 薄板透過の近似（Barré-Brisebois & Bouchard, GDC 2011）。
+    // 透過ローブを法線（上向き）で歪ませ、上からの光が下へ抜ける挙動を再現。
     // 穂先ほど薄いので vTip で強める。
     shader.fragmentShader =
       'uniform vec3 uSunDir;\nuniform vec3 uSunColor;\nvarying float vTip;\n' +
@@ -143,8 +144,9 @@ function createGrassMaterial(uniforms) {
         '#include <opaque_fragment>',
         `vec3 sunView = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
         vec3 viewDir = normalize(vViewPosition);
-        float trans = pow(max(dot(-viewDir, sunView), 0.0), 3.0);
-        outgoingLight += uSunColor * vec3(0.55, 1.0, 0.4) * trans * vTip * 0.65;
+        vec3 transH = normalize(sunView + normal * 0.4);
+        float trans = pow(clamp(dot(viewDir, -transH), 0.0, 1.0), 3.0);
+        outgoingLight += uSunColor * vec3(0.55, 1.0, 0.4) * trans * vTip * 0.7;
         #include <opaque_fragment>`
       );
   };
