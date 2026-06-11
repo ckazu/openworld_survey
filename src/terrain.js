@@ -67,8 +67,8 @@ export function createTerrain() {
   const normals = geometry.attributes.normal;
   const colors = new Float32Array(pos.count * 3);
 
-  const grassA = new THREE.Color(0x79a844); // 黄緑寄りの暖かい草原
-  const grassB = new THREE.Color(0x52852f);
+  const grassA = new THREE.Color(0x6f9747); // 黄緑寄りの暖かい草原（彩度は控えめ）
+  const grassB = new THREE.Color(0x4c7331);
   const grassDry = new THREE.Color(0x9aa64b); // 乾いた草の差し色
   const forestFloor = new THREE.Color(0x44682c);
   const sand = new THREE.Color(0xcfc08d);
@@ -154,7 +154,37 @@ export function createTerrain() {
         float dnMid = tnoise(vDetailPos.xz * 0.9);
         float dnLarge = tnoise(vDetailPos.xz * 0.16);
         float dnFine = tnoise(vDetailPos.xz * 4.5);
-        diffuseColor.rgb *= 0.86 + dnLarge * 0.14 + dnMid * 0.10 + dnFine * 0.06;`
+        diffuseColor.rgb *= 0.86 + dnLarge * 0.14 + dnMid * 0.10 + dnFine * 0.06;
+        // 近距離フェード（遠景はディテールを消してちらつきを防ぐ）
+        float detailFade = 1.0 - smoothstep(25.0, 80.0, length(vViewPosition));
+        // 草地（G が支配的な色）にだけ、中周波パッチで土の色むらを混ぜる
+        float grassy = step(diffuseColor.r, diffuseColor.g) * step(diffuseColor.b, diffuseColor.g);
+        float soilPatch = smoothstep(0.52, 0.78, tnoise(vDetailPos.xz * 1.3 + 37.0))
+                        * (0.6 + 0.4 * tnoise(vDetailPos.xz * 5.0));
+        // 近距離は草の根元の土が覗くイメージで常時薄く、パッチ部はさらに濃く
+        diffuseColor.rgb = mix(
+          diffuseColor.rgb,
+          diffuseColor.rgb * vec3(0.72, 0.6, 0.45),
+          grassy * detailFade * (0.22 + soilPatch * 0.4)
+        );`
+      )
+      .replace(
+        '#include <normal_fragment_begin>',
+        `#include <normal_fragment_begin>
+        // tnoise の勾配から微細法線を作り、近距離だけバンプを効かせる
+        {
+          float bFade = 1.0 - smoothstep(25.0, 80.0, length(vViewPosition));
+          if (bFade > 0.001) {
+            const float be = 0.1;
+            vec2 bp = vDetailPos.xz * 9.0;
+            float bC = tnoise(bp) * 0.6 + tnoise(bp * 3.1) * 0.4;
+            float bX = tnoise(bp + vec2(be, 0.0)) * 0.6 + tnoise((bp + vec2(be, 0.0)) * 3.1) * 0.4;
+            float bZ = tnoise(bp + vec2(0.0, be)) * 0.6 + tnoise((bp + vec2(0.0, be)) * 3.1) * 0.4;
+            vec3 bumpWorld = normalize(vec3(-(bX - bC) / be, 2.6, -(bZ - bC) / be));
+            vec3 bumpView = normalize((viewMatrix * vec4(bumpWorld, 0.0)).xyz);
+            normal = normalize(mix(normal, bumpView, 0.45 * bFade));
+          }
+        }`
       );
   };
 
