@@ -30,10 +30,15 @@ const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerH
 // レイヤー 1 = 水面反射に映さないオブジェクト（草・花）
 camera.layers.enable(1);
 
-// 共有ユニフォーム（草の揺れアニメーション）
-const sharedUniforms = { uTime: { value: 0 } };
+// 共有ユニフォーム（草の揺れアニメーション・サブサーフェス透過）
+const sharedUniforms = {
+  uTime: { value: 0 },
+  uSunDir: { value: new THREE.Vector3() },
+  uSunColor: { value: new THREE.Color(0xffe9c4) },
+};
 
 const { sunDirection, followPlayer } = createSky(scene, renderer);
+sharedUniforms.uSunDir.value.copy(sunDirection);
 scene.add(createTerrain());
 const water = createWater(sunDirection);
 scene.add(water);
