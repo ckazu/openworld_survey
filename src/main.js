@@ -43,7 +43,7 @@ sharedUniforms.uSunDir.value.copy(sunDirection);
 scene.add(createTerrain());
 const water = createWater(sunDirection);
 scene.add(water);
-scene.add(createVegetation());
+scene.add(createVegetation(sharedUniforms));
 const grass = createGrassField(sharedUniforms);
 scene.add(grass.group);
 const ambience = createAmbience();

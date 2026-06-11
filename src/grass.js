@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { WATER_LEVEL, terrainHeight } from './terrain.js';
 import { mulberry32, fbm } from './noise.js';
+import { grassBladeTexture } from './textures.js';
 
 // プレイヤー周辺のタイルにだけ草を生やす動的グラスフィールド。
 // 16m 四方のタイル単位で生成・破棄し、近距離タイルは高密度・遠距離は低密度の 2 段 LOD。
@@ -23,23 +24,28 @@ const BLADE_SHAPES = [
 ];
 
 function createBladeGeometry({ width, curl }) {
-  // 先細り + 先端が反り返る 1 枚ブレード
-  const geometry = new THREE.PlaneGeometry(width, BLADE_HEIGHT, 1, 4);
+  // 先細り + 先端が反り返るブレード。中央列を持つ 2x4 分割で、
+  // 先端の尖りと縦フォールド（浅い V 字断面）を作る
+  const geometry = new THREE.PlaneGeometry(width, BLADE_HEIGHT, 2, 4);
   geometry.translate(0, BLADE_HEIGHT / 2, 0);
   const pos = geometry.attributes.position;
   for (let i = 0; i < pos.count; i++) {
     const t = pos.getY(i) / BLADE_HEIGHT;
-    pos.setX(i, pos.getX(i) * (1 - t * 0.85));
-    pos.setZ(i, pos.getZ(i) + t * t * curl); // 反り
+    const x = pos.getX(i);
+    // 先細り（最上段は一点に収束 = 尖頭）
+    pos.setX(i, t >= 0.999 ? 0 : x * (1 - t * 0.85));
+    // 反り + 中央列を手前に出すフォールドで厚みの錯覚
+    const fold = (1 - Math.abs(x) / (width / 2 + 1e-6)) * width * 0.18;
+    pos.setZ(i, pos.getZ(i) + t * t * curl + fold * (1 - t));
   }
   // 法線を上向きに揃えて、地面と同じ陰影で馴染ませる
   const normals = geometry.attributes.normal;
   for (let i = 0; i < normals.count; i++) normals.setXYZ(i, 0, 1, 0);
-  // 根元を暗く、穂先を明るくするグラデーション
+  // 根元を強めに暗くして接地感を出し、穂先を明るく
   const colors = new Float32Array(pos.count * 3);
   for (let i = 0; i < pos.count; i++) {
     const t = pos.getY(i) / BLADE_HEIGHT;
-    const v = 0.55 + t * 0.55;
+    const v = 0.3 + t * 0.8;
     colors[i * 3] = v;
     colors[i * 3 + 1] = v;
     colors[i * 3 + 2] = v;
@@ -49,10 +55,15 @@ function createBladeGeometry({ width, curl }) {
 }
 
 function createGrassMaterial(uniforms) {
-  const material = new THREE.MeshLambertMaterial({
+  // Phong で弱い艶を持たせ、風で揺れたとき穂が鈍く光る
+  const material = new THREE.MeshPhongMaterial({
     color: 0xffffff,
     side: THREE.DoubleSide,
     vertexColors: true,
+    map: grassBladeTexture(),
+    alphaTest: 0.4,
+    specular: new THREE.Color(0x1a2412),
+    shininess: 18,
   });
   material.reflectivity = 0; // scene.environment の映り込みで白飛びさせない
 
@@ -149,12 +160,12 @@ export function createGrassField(uniforms) {
         scaleV.set(0.7 + p.s * 0.75, 0.7 + p.s * 0.9, 0.7 + p.s * 0.75);
         matrix.compose(position, quaternion, scaleV);
         mesh.setMatrixAt(i, matrix);
-        // 黄緑寄りの暖かいパレット。大きなパッチで明度・色相が移ろう
+        // 彩度を抑えた自然な草色。大きなパッチで明度・色相が移ろい、乾いた黄味が混ざる
         const patch = fbm(p.x * 0.012, p.z * 0.012, 2, 3);
         color.setHSL(
-          0.2 + patch * 0.06 + p.r * 0.03,
-          0.48 + p.s * 0.2,
-          0.28 + patch * 0.22 + p.t * 0.06
+          0.17 + patch * 0.07 + p.r * 0.03,
+          0.32 + p.s * 0.16,
+          0.3 + patch * 0.18 + p.t * 0.06
         );
         mesh.setColorAt(i, color);
       });
