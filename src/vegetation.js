@@ -204,7 +204,7 @@ function createLeafCardsAt(positions, card, seed) {
   const p = new THREE.Vector3();
   const s = new THREE.Vector3();
   for (const o of positions) {
-    for (let k = 0; k < 2; k++) {
+    for (let k = 0; k < 3; k++) {
       const g = card.clone();
       e.set((r() - 0.5) * Math.PI * 1.2, r() * Math.PI * 2, (r() - 0.5) * Math.PI);
       q.setFromEuler(e);
@@ -222,9 +222,12 @@ function createLeafCardsAt(positions, card, seed) {
 
 // 針葉樹の樹冠: 幹から放射状に伸びる枝（下ほど長い）に沿って葉房を置き、
 // モミの木の「段々の層」シルエットを作る。円錐に一様に撒くより枝の構造が読める
-function createConiferCrown(card, seed) {
+// 針葉樹の構造: 段ごとの放射状の枝（実ジオメトリ付き）と、枝に沿った針葉の房。
+// 枝を実際に描くことで「葉群が宙に浮く」のを防ぐ
+function createConiferStructure(card, seed) {
   const r = mulberry32(seed);
   const positions = [];
+  const branchGeos = [];
   const whorls = 8;        // 枝の段数
   const yMin = 2.0;
   const yMax = 6.5;
@@ -236,23 +239,31 @@ function createConiferCrown(card, seed) {
     const yawOff = r() * Math.PI * 2;
     for (let b = 0; b < branches; b++) {
       const yaw = yawOff + (b / branches) * Math.PI * 2 + (r() - 0.5) * 0.5;
+      // 枝の実ジオメトリ（やや垂れて先で持ち上がる先端へ向かう細い円柱）
+      const tipDroop = -maxLen * 0.18 + 0.08;
+      const p0 = new THREE.Vector3(0, y, 0);
+      const p1 = new THREE.Vector3(Math.cos(yaw) * maxLen, y + tipDroop, Math.sin(yaw) * maxLen);
+      branchGeos.push(cylinderBetween(p0, p1, 0.04 * (1.2 - t * 0.5), 0.012));
       const tufts = 2 + Math.floor(r() * 2);
       for (let k = 0; k < tufts; k++) {
         const f = (k + 1) / tufts; // 枝に沿った位置（先端 = 1）
         const len = maxLen * f;
-        const droop = -len * 0.18 + f * 0.08; // 枝はやや垂れ、先で持ち上がる
+        const droop = -len * 0.18 + f * 0.08;
         positions.push({
           x: Math.cos(yaw) * len,
           y: y + droop + (r() - 0.5) * 0.1,
           z: Math.sin(yaw) * len,
-          scale: 0.55 + f * 0.5 + r() * 0.25,
-          ao: 0.6 + 0.4 * f, // 幹に近い内側ほど陰る
+          scale: 0.7 + f * 0.55 + r() * 0.25,
+          ao: 0.65 + 0.35 * f, // 幹に近い内側ほど陰る
         });
       }
     }
   }
   positions.push({ x: 0, y: yMax + 0.25, z: 0, scale: 0.8, ao: 1 }); // 頂部の房
-  return createLeafCardsAt(positions, card, seed + 1);
+  return {
+    crown: createLeafCardsAt(positions, card, seed + 1),
+    branches: BufferGeometryUtils.mergeGeometries(branchGeos),
+  };
 }
 
 // 楕円球ボリューム（広葉樹の葉塊用）。球内に一様分布
@@ -423,32 +434,48 @@ function assembleTree(trunkGeo, crownGeo, points, place, uniforms, leafTex = lea
   return group;
 }
 
-function createConifers(uniforms) {
-  let trunk = BufferGeometryUtils.mergeVertices(new THREE.CylinderGeometry(0.14, 0.34, 2.6, 8, 6));
-  trunk.translate(0, 1.3, 0);
-  shapeTrunk(trunk, 2.6, 0.06, 0.5);
-  displace(trunk, 0.04, 1.5, 11);
-  paintGradient(trunk, 0x4a3826, 0x5d4630, 0, 2.6);
+// 針葉樹 1 変種: 幹 + 実体のある枝 + 枝に沿った針葉の房
+function createConiferVariant(seed) {
+  const r = mulberry32(seed);
+  // 幹: 樹冠の最上段（y6.5）近くまで細く続く
+  let trunk = BufferGeometryUtils.mergeVertices(new THREE.CylinderGeometry(0.06, 0.34, 6.4, 8, 8));
+  trunk.translate(0, 3.2, 0);
+  shapeTrunk(trunk, 6.4, 0.05 + r() * 0.04, 0.5);
 
-  // 枝スポーク構造の樹冠（段々の層シルエット）
   const card = makeLeafCard(0.42, 0.82);
-  const crown = createConiferCrown(card, 777);
+  const { crown, branches } = createConiferStructure(card, seed);
+  trunk = BufferGeometryUtils.mergeGeometries([trunk, branches]);
+  paintBark(trunk, 0x4a3826, 0x5d4630, 0, 6.4, seed % 100);
+
   // 円錐の軸から放射状 + やや上向きの法線で、樹冠全体を滑らかに陰影させる
   sphericalNormals(crown, (x, y, z) => new THREE.Vector3(x, 0.55, z));
   paintGradient(crown, 0x244a1e, 0x5c8f3c, 1.9, 6.7);
   applyBakedAO(crown);
+  return { trunk, crown };
+}
+
+function createConifers(uniforms) {
+  // シード違いの変種で「全部同じ木」感を消す
+  const variants = [7501, 7603, 7707].map(createConiferVariant);
 
   const points = scatter(1400, (x, z, h) => {
     if (h < WATER_LEVEL + 2 || h > 30) return false;
     if (terrainSlope(x, z) > 0.85) return false;
     return forestDensity(x, z) > 0.55;
   });
+  const buckets = variants.map(() => []);
+  for (const p of points) buckets[Math.floor(rand() * variants.length)].push(p);
 
-  return assembleTree(trunk, crown, points, () => ({
-    scale: 0.8 + rand() * 1.1,
-    sink: -0.15,
-    tint: { h: 0.28 + rand() * 0.06, s: 0.25 + rand() * 0.2, l: 0.5 + rand() * 0.18 },
-  }), uniforms);
+  const group = new THREE.Group();
+  variants.forEach((v, i) => {
+    if (buckets[i].length === 0) return;
+    group.add(assembleTree(v.trunk, v.crown, buckets[i], () => ({
+      scale: 0.8 + rand() * 1.1,
+      sink: -0.15,
+      tint: { h: 0.28 + rand() * 0.06, s: 0.25 + rand() * 0.2, l: 0.5 + rand() * 0.18 },
+    }), uniforms));
+  });
+  return group;
 }
 
 // 広葉樹 1 変種: 枝スケルトンを作り、枝先座標に葉クラスタを直接生成する

@@ -144,14 +144,15 @@ export function leafClusterTexture() {
     s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff;
     return s / 0x7fffffff;
   };
-  for (let i = 0; i < 64; i++) {
-    // 中心バイアスのある配置（外周は疎らに）
+  for (let i = 0; i < 170; i++) {
+    // 中心バイアスのある配置（外周は疎らに）。短い針葉を密に重ねて
+    // ひも状の隙間を減らし、針葉の房として読めるようにする
     const a = rnd() * Math.PI * 2;
-    const r = Math.sqrt(rnd()) * size * 0.4;
+    const r = Math.sqrt(rnd()) * size * 0.42;
     const x = size / 2 + Math.cos(a) * r;
     const y = size / 2 + Math.sin(a) * r;
-    const len = size * (0.18 + rnd() * 0.14);
-    const wid = len * (0.4 + rnd() * 0.22);
+    const len = size * (0.13 + rnd() * 0.11);
+    const wid = len * (0.34 + rnd() * 0.2);
     // 明度 + 色相のばらつき: 黄緑（R 高め）〜深緑（G 優位・B 低め）
     const v = 165 + Math.floor(rnd() * 85);
     const hueShift = rnd(); // 0 = 深緑寄り, 1 = 黄緑寄り
