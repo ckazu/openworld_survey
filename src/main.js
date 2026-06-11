@@ -23,7 +23,7 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.5;
+renderer.toneMappingExposure = 0.62; // 低い太陽に合わせて露出を補正
 app.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -35,7 +35,7 @@ camera.layers.enable(1);
 const sharedUniforms = {
   uTime: { value: 0 },
   uSunDir: { value: new THREE.Vector3() },
-  uSunColor: { value: new THREE.Color(0xffe9c4) },
+  uSunColor: { value: new THREE.Color(0xffc587) }, // ゴールデンアワーの暖色（sky.js と同じ）
   uPlayerPos: { value: new THREE.Vector2() }, // 草の踏み分け用（ワールド xz）
 };
 
@@ -134,7 +134,7 @@ const shaftPass = new ShaderPass({
         vec3 s = texture2D(tDiffuse, uv).rgb;
         float lum = dot(s, vec3(0.2126, 0.7152, 0.0722));
         // 太陽近傍の高輝度だけを拾い、遮蔽（暗い木立）で筋が生まれる
-        acc += s * smoothstep(1.8, 4.0, lum) * illum;
+        acc += s * smoothstep(2.4, 5.5, lum) * illum;
         illum *= 0.94;
       }
       gl_FragColor = vec4(base.rgb + acc / 56.0 * uStrength, base.a);
@@ -200,7 +200,7 @@ function updateLightShafts() {
     const offX = Math.max(0, Math.abs(sunWorld.x) - 1);
     const offY = Math.max(0, Math.abs(sunWorld.y) - 1);
     const off = Math.min(1, Math.hypot(offX, offY) / 0.6);
-    strength = (1 - off) * 0.35;
+    strength = (1 - off) * 0.22;
   }
   shaftPass.uniforms.uStrength.value = strength;
 }

@@ -7,7 +7,7 @@ export function createSky(scene, renderer) {
   sky.scale.setScalar(4000);
 
   const sun = new THREE.Vector3();
-  const elevation = 26; // 度
+  const elevation = 8; // 度（ゴールデンアワーの低い斜光）
   const azimuth = 145;
   const phi = THREE.MathUtils.degToRad(90 - elevation);
   const theta = THREE.MathUtils.degToRad(azimuth);
@@ -15,10 +15,11 @@ export function createSky(scene, renderer) {
 
   const u = sky.material.uniforms;
   u.sunPosition.value.copy(sun);
-  u.turbidity.value = 7;
-  u.rayleigh.value = 2.0;
-  u.mieCoefficient.value = 0.005;
-  u.mieDirectionalG.value = 0.85;
+  // 低い太陽 + 高めの濁度で、地平線が橙〜琥珀に染まる夕方の空にする
+  u.turbidity.value = 9;
+  u.rayleigh.value = 2.6;
+  u.mieCoefficient.value = 0.0045; // 低い太陽では暈が巨大化するため控えめに
+  u.mieDirectionalG.value = 0.82;
 
   // 空を PMREM 化して PBR 材質の環境光（IBL）として使う。
   // Sky は頂点シェーダで far 平面に張り付くので CubeCamera でもクリップされない
@@ -29,11 +30,11 @@ export function createSky(scene, renderer) {
   pmrem.dispose();
   scene.add(sky); // envScene.add で外れるので戻す
   scene.environment = envRT.texture;
-  scene.environmentIntensity = 0.3;
+  scene.environmentIntensity = 0.38; // 夕方の空は暗めなので少し持ち上げる
 
   // 太陽光（シャドウはプレイヤー周辺だけに絞って解像度を確保する）
-  // 環境光に対して太陽を強めにし、影のコントラストを立たせる
-  const sunLight = new THREE.DirectionalLight(0xffe9c4, 3.1);
+  // ゴールデンアワーの暖色。環境光に対して強めにし、影のコントラストを立たせる
+  const sunLight = new THREE.DirectionalLight(0xffc587, 3.4);
   sunLight.castShadow = true;
   sunLight.shadow.mapSize.set(4096, 4096);
   const SHADOW_RANGE = 110;
@@ -49,12 +50,12 @@ export function createSky(scene, renderer) {
   scene.add(sunLight.target);
 
   // IBL が主のアンビエントになるのでヘミライトは控えめに
-  // （強すぎると影が淡くなり立体感が失われる）
-  const hemiLight = new THREE.HemisphereLight(0xbfd8ec, 0x5a6e4a, 0.4);
+  // （強すぎると影が淡くなり立体感が失われる）。夕方の空に合わせて暖色〜薄紫
+  const hemiLight = new THREE.HemisphereLight(0xc9b8d8, 0x6e5e3a, 0.4);
   scene.add(hemiLight);
 
-  // 青みがかった空気遠近感
-  scene.fog = new THREE.FogExp2(0xb4d0e4, 0.0017);
+  // 夕方の暖色がかった空気遠近感
+  scene.fog = new THREE.FogExp2(0xe2c8a8, 0.0019);
 
   // プレイヤー追従でシャドウカメラを動かす
   function followPlayer(playerPos) {
