@@ -165,6 +165,39 @@ export function leafClusterTexture() {
   return _leafCluster;
 }
 
+let _broadleaf = null;
+
+// 広葉樹・低木用: 丸い小葉を密に重ねた塊。細長いシルエット
+// （leafClusterTexture、針葉樹用）と分離し「海藻の房」感を解消する
+export function broadleafTexture() {
+  if (_broadleaf) return _broadleaf;
+  const size = 512;
+  const canvas = makeCanvas(size);
+  const ctx = canvas.getContext('2d');
+  let s = 54321;
+  const rnd = () => {
+    s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff;
+    return s / 0x7fffffff;
+  };
+  for (let i = 0; i < 110; i++) {
+    const a = rnd() * Math.PI * 2;
+    const r = Math.sqrt(rnd()) * size * 0.4;
+    const x = size / 2 + Math.cos(a) * r;
+    const y = size / 2 + Math.sin(a) * r;
+    // 丸い葉（幅/長さ比 0.55〜0.8）を小さめ・多めに重ねる
+    const len = size * (0.1 + rnd() * 0.09);
+    const wid = len * (0.55 + rnd() * 0.25);
+    const v = 165 + Math.floor(rnd() * 85);
+    const hueShift = rnd();
+    const rr = Math.floor(v * (0.62 + hueShift * 0.36));
+    const bb = Math.floor(v * (0.5 + (1 - hueShift) * 0.2));
+    drawLeafShape(ctx, x, y, len, wid, rnd() * Math.PI * 2, `rgb(${rr},${v},${bb})`);
+  }
+  _broadleaf = new THREE.CanvasTexture(canvas);
+  _broadleaf.colorSpace = THREE.SRGBColorSpace;
+  return _broadleaf;
+}
+
 let _cloudPuff = null;
 
 // 雲パフ: 放射状フォールオフに FBM で凹凸をつけたソフトなアルファ。
