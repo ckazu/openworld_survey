@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Open World — 草原・湖畔・森</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      height: 100%;
+      background: #0b1620;
+      font-family: "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+    }
+    #app { width: 100%; height: 100%; }
+    #overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      background: rgba(8, 18, 26, 0.72);
+      backdrop-filter: blur(6px);
+      color: #e8f1f5;
+      cursor: pointer;
+      z-index: 10;
+      transition: opacity 0.3s;
+    }
+    #overlay.hidden { opacity: 0; pointer-events: none; }
+    #overlay h1 {
+      font-size: 34px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      margin: 0;
+    }
+    #overlay p.sub { margin: 0; opacity: 0.75; font-size: 15px; }
+    #overlay .controls {
+      display: grid;
+      grid-template-columns: auto auto;
+      gap: 8px 16px;
+      font-size: 14px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      padding: 18px 28px;
+    }
+    #overlay .controls b {
+      font-weight: 600;
+      color: #9fd8ff;
+      text-align: right;
+    }
+    #overlay .start { font-size: 16px; opacity: 0.9; animation: pulse 2s infinite; }
+    @keyframes pulse { 50% { opacity: 0.4; } }
+    #crosshair {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      width: 6px;
+      height: 6px;
+      margin: -3px 0 0 -3px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.7);
+      box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
+      z-index: 5;
+      pointer-events: none;
+    }
+    #hud {
+      position: fixed;
+      left: 14px;
+      bottom: 12px;
+      color: rgba(255, 255, 255, 0.65);
+      font-size: 12px;
+      z-index: 5;
+      pointer-events: none;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="crosshair"></div>
+  <div id="hud"></div>
+  <div id="overlay">
+    <h1>OPEN WORLD</h1>
+    <p class="sub">草原・湖畔・森を自由に歩き回ろう</p>
+    <div class="controls">
+      <b>W A S D</b><span>移動</span>
+      <b>マウス</b><span>視点</span>
+      <b>Shift</b><span>ダッシュ</span>
+      <b>Space</b><span>ジャンプ</span>
+      <b>Esc</b><span>メニューに戻る</span>
+    </div>
+    <p class="start">クリックして開始</p>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
