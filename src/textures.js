@@ -144,14 +144,15 @@ export function leafClusterTexture() {
     s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff;
     return s / 0x7fffffff;
   };
-  for (let i = 0; i < 64; i++) {
-    // 中心バイアスのある配置（外周は疎らに）
+  for (let i = 0; i < 170; i++) {
+    // 中心バイアスのある配置（外周は疎らに）。短い針葉を密に重ねて
+    // ひも状の隙間を減らし、針葉の房として読めるようにする
     const a = rnd() * Math.PI * 2;
-    const r = Math.sqrt(rnd()) * size * 0.4;
+    const r = Math.sqrt(rnd()) * size * 0.42;
     const x = size / 2 + Math.cos(a) * r;
     const y = size / 2 + Math.sin(a) * r;
-    const len = size * (0.18 + rnd() * 0.14);
-    const wid = len * (0.4 + rnd() * 0.22);
+    const len = size * (0.13 + rnd() * 0.11);
+    const wid = len * (0.34 + rnd() * 0.2);
     // 明度 + 色相のばらつき: 黄緑（R 高め）〜深緑（G 優位・B 低め）
     const v = 165 + Math.floor(rnd() * 85);
     const hueShift = rnd(); // 0 = 深緑寄り, 1 = 黄緑寄り
@@ -163,6 +164,39 @@ export function leafClusterTexture() {
   _leafCluster = new THREE.CanvasTexture(canvas);
   _leafCluster.colorSpace = THREE.SRGBColorSpace;
   return _leafCluster;
+}
+
+let _broadleaf = null;
+
+// 広葉樹・低木用: 丸い小葉を密に重ねた塊。細長いシルエット
+// （leafClusterTexture、針葉樹用）と分離し「海藻の房」感を解消する
+export function broadleafTexture() {
+  if (_broadleaf) return _broadleaf;
+  const size = 512;
+  const canvas = makeCanvas(size);
+  const ctx = canvas.getContext('2d');
+  let s = 54321;
+  const rnd = () => {
+    s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff;
+    return s / 0x7fffffff;
+  };
+  for (let i = 0; i < 110; i++) {
+    const a = rnd() * Math.PI * 2;
+    const r = Math.sqrt(rnd()) * size * 0.4;
+    const x = size / 2 + Math.cos(a) * r;
+    const y = size / 2 + Math.sin(a) * r;
+    // 丸い葉（幅/長さ比 0.55〜0.8）を小さめ・多めに重ねる
+    const len = size * (0.1 + rnd() * 0.09);
+    const wid = len * (0.55 + rnd() * 0.25);
+    const v = 165 + Math.floor(rnd() * 85);
+    const hueShift = rnd();
+    const rr = Math.floor(v * (0.62 + hueShift * 0.36));
+    const bb = Math.floor(v * (0.5 + (1 - hueShift) * 0.2));
+    drawLeafShape(ctx, x, y, len, wid, rnd() * Math.PI * 2, `rgb(${rr},${v},${bb})`);
+  }
+  _broadleaf = new THREE.CanvasTexture(canvas);
+  _broadleaf.colorSpace = THREE.SRGBColorSpace;
+  return _broadleaf;
 }
 
 let _cloudPuff = null;

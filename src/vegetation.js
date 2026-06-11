@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { WORLD_SIZE, WATER_LEVEL, terrainHeight, terrainSlope, forestDensity } from './terrain.js';
 import { mulberry32, fbm } from './noise.js';
-import { barkNormalMap, rockNormalMap, rockRoughnessMap, leafClusterTexture, flowerTexture } from './textures.js';
+import { barkNormalMap, rockNormalMap, rockRoughnessMap, leafClusterTexture, broadleafTexture, flowerTexture } from './textures.js';
 
 const rand = mulberry32(20260611);
 
@@ -59,6 +59,9 @@ function leafMaterial(uniforms, extra = {}) {
     side: THREE.DoubleSide,
     map: leafClusterTexture(),
     alphaTest: 0.5,
+    // 陰側の葉が黒切り絵にならないよう、葉だけ IBL を強めに受ける
+    // （上げすぎると日向側が白飛びする）
+    envMapIntensity: 1.2,
     ...extra,
   });
   material.onBeforeCompile = (shader) => {
@@ -102,7 +105,7 @@ function leafMaterial(uniforms, extra = {}) {
           vec3 viewDir = normalize(vViewPosition);
           vec3 transH = normalize(sunView + normal * 0.4);
           float trans = pow(clamp(dot(viewDir, -transH), 0.0, 1.0), 3.0);
-          outgoingLight += uSunColor * vec3(0.5, 1.0, 0.35) * trans * 0.5 * diffuseColor.rgb;
+          outgoingLight += uSunColor * vec3(0.5, 1.0, 0.35) * trans * 0.42 * diffuseColor.rgb;
         }
         #include <opaque_fragment>`
       );
@@ -111,10 +114,10 @@ function leafMaterial(uniforms, extra = {}) {
 }
 
 // 影もアルファ抜きにする（無いと葉カードが矩形の影を落とす）
-function leafDepthMaterial() {
+function leafDepthMaterial(texture = leafClusterTexture()) {
   return new THREE.MeshDepthMaterial({
     depthPacking: THREE.RGBADepthPacking,
-    map: leafClusterTexture(),
+    map: texture,
     alphaTest: 0.5,
   });
 }
@@ -134,7 +137,7 @@ function makeLeafCard(w, h) {
 // ボリューム関数 place(rnd) -> {x,y,z,scale,ao} に従い葉カードを多数ばら撒いて 1 ジオメトリにマージ。
 // ブロブ（滑らかな塊）の代わりに、無数の葉が重なった樹冠を作る。
 // ao（0..1、内側ほど小）は aoBake 属性に保存し、paintGradient の後で乗算する。
-function createLeafCluster(count, place, card, seed) {
+function createLeafCluster(count, place, card, seed, flat = false) {
   const r = mulberry32(seed);
   const cards = [];
   const m = new THREE.Matrix4();
@@ -145,7 +148,12 @@ function createLeafCluster(count, place, card, seed) {
   for (let i = 0; i < count; i++) {
     const o = place(r);
     const g = card.clone();
-    e.set((r() - 0.5) * Math.PI * 1.2, r() * Math.PI * 2, (r() - 0.5) * Math.PI);
+    if (flat) {
+      // 広葉樹: 葉は重力と光に応じて水平寄りに広がる（±30°程度）
+      e.set(-Math.PI / 2 * 0.75 + (r() - 0.5) * 1.0, r() * Math.PI * 2, (r() - 0.5) * 0.6);
+    } else {
+      e.set((r() - 0.5) * Math.PI * 1.2, r() * Math.PI * 2, (r() - 0.5) * Math.PI);
+    }
     q.setFromEuler(e);
     p.set(o.x, o.y, o.z);
     s.setScalar(o.scale ?? 1);
@@ -196,7 +204,7 @@ function createLeafCardsAt(positions, card, seed) {
   const p = new THREE.Vector3();
   const s = new THREE.Vector3();
   for (const o of positions) {
-    for (let k = 0; k < 2; k++) {
+    for (let k = 0; k < 3; k++) {
       const g = card.clone();
       e.set((r() - 0.5) * Math.PI * 1.2, r() * Math.PI * 2, (r() - 0.5) * Math.PI);
       q.setFromEuler(e);
@@ -214,9 +222,12 @@ function createLeafCardsAt(positions, card, seed) {
 
 // 針葉樹の樹冠: 幹から放射状に伸びる枝（下ほど長い）に沿って葉房を置き、
 // モミの木の「段々の層」シルエットを作る。円錐に一様に撒くより枝の構造が読める
-function createConiferCrown(card, seed) {
+// 針葉樹の構造: 段ごとの放射状の枝（実ジオメトリ付き）と、枝に沿った針葉の房。
+// 枝を実際に描くことで「葉群が宙に浮く」のを防ぐ
+function createConiferStructure(card, seed) {
   const r = mulberry32(seed);
   const positions = [];
+  const branchGeos = [];
   const whorls = 8;        // 枝の段数
   const yMin = 2.0;
   const yMax = 6.5;
@@ -228,23 +239,31 @@ function createConiferCrown(card, seed) {
     const yawOff = r() * Math.PI * 2;
     for (let b = 0; b < branches; b++) {
       const yaw = yawOff + (b / branches) * Math.PI * 2 + (r() - 0.5) * 0.5;
+      // 枝の実ジオメトリ（やや垂れて先で持ち上がる先端へ向かう細い円柱）
+      const tipDroop = -maxLen * 0.18 + 0.08;
+      const p0 = new THREE.Vector3(0, y, 0);
+      const p1 = new THREE.Vector3(Math.cos(yaw) * maxLen, y + tipDroop, Math.sin(yaw) * maxLen);
+      branchGeos.push(cylinderBetween(p0, p1, 0.04 * (1.2 - t * 0.5), 0.012));
       const tufts = 2 + Math.floor(r() * 2);
       for (let k = 0; k < tufts; k++) {
         const f = (k + 1) / tufts; // 枝に沿った位置（先端 = 1）
         const len = maxLen * f;
-        const droop = -len * 0.18 + f * 0.08; // 枝はやや垂れ、先で持ち上がる
+        const droop = -len * 0.18 + f * 0.08;
         positions.push({
           x: Math.cos(yaw) * len,
           y: y + droop + (r() - 0.5) * 0.1,
           z: Math.sin(yaw) * len,
-          scale: 0.55 + f * 0.5 + r() * 0.25,
-          ao: 0.6 + 0.4 * f, // 幹に近い内側ほど陰る
+          scale: 0.7 + f * 0.55 + r() * 0.25,
+          ao: 0.65 + 0.35 * f, // 幹に近い内側ほど陰る
         });
       }
     }
   }
   positions.push({ x: 0, y: yMax + 0.25, z: 0, scale: 0.8, ao: 1 }); // 頂部の房
-  return createLeafCardsAt(positions, card, seed + 1);
+  return {
+    crown: createLeafCardsAt(positions, card, seed + 1),
+    branches: BufferGeometryUtils.mergeGeometries(branchGeos),
+  };
 }
 
 // 楕円球ボリューム（広葉樹の葉塊用）。球内に一様分布
@@ -258,7 +277,7 @@ function blobVolume(cx, cy, cz, rx, ry, rz) {
       y: cy + Math.cos(phi) * ry * rr,
       z: cz + Math.sin(phi) * Math.sin(theta) * rz * rr,
       scale: 0.8 + rnd() * 0.6,
-      ao: 0.62 + 0.38 * rr, // 塊の中心ほど陰る
+      ao: 0.7 + 0.3 * rr, // 塊の中心ほど陰る（下げすぎると黒切り絵になる）
     };
   };
 }
@@ -280,18 +299,70 @@ function shapeTrunk(geometry, height, bendAmp, flare) {
   return geometry;
 }
 
-// 幹から放射状に伸びる枝（テーパー円柱を傾けて配置しマージ）
-function createBranches(specs) {
-  const branches = specs.map((b) => {
-    let g = BufferGeometryUtils.mergeVertices(new THREE.CylinderGeometry(b.r1, b.r0, b.len, 5));
-    g.translate(0, b.len / 2, 0);
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(b.pitch, b.yaw, 0));
-    m.compose(new THREE.Vector3(0, b.base, 0), q, new THREE.Vector3(1, 1, 1));
-    g.applyMatrix4(m);
-    return g;
-  });
-  return BufferGeometryUtils.mergeGeometries(branches);
+// 2 点間を結ぶテーパー円柱（枝のセグメント）
+function cylinderBetween(p0, p1, r0, r1) {
+  const dir = new THREE.Vector3().subVectors(p1, p0);
+  const len = dir.length();
+  const g = new THREE.CylinderGeometry(r1, r0, len, 6);
+  g.translate(0, len / 2, 0);
+  const q = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    dir.clone().normalize()
+  );
+  const m = new THREE.Matrix4().compose(p0, q, new THREE.Vector3(1, 1, 1));
+  g.applyMatrix4(m);
+  return g;
+}
+
+// 広葉樹のスケルトン: 幹 + 曲がった主枝（2 セグメントチェーン）。
+// 葉クラスタを置くべき枝先座標（tips）を返し、樹冠との接続を構造的に保証する
+function createBroadleafSkeleton(seed) {
+  const r = mulberry32(seed);
+  const parts = [];
+  const tips = [];
+
+  // 幹: 根元から樹冠中心まで細くなりながら続く
+  let trunk = BufferGeometryUtils.mergeVertices(new THREE.CylinderGeometry(0.17, 0.44, 3.2, 8, 6));
+  trunk.translate(0, 1.6, 0);
+  shapeTrunk(trunk, 3.2, 0.08 + r() * 0.06, 0.55);
+  parts.push(trunk);
+  tips.push({ x: 0, y: 3.5, z: 0, len: 1.2 }); // 頂部クラスタ
+
+  // 主枝: 幹上部から 4〜5 本。下段は急角度、先で水平寄りに曲がる
+  const boughs = 4 + Math.floor(r() * 2);
+  const yawOff = r() * Math.PI * 2;
+  for (let b = 0; b < boughs; b++) {
+    const yaw = yawOff + (b / boughs) * Math.PI * 2 + (r() - 0.5) * 0.6;
+    const baseY = 1.6 + r() * 0.9;
+    const len1 = 0.9 + r() * 0.5;
+    const len2 = 0.8 + r() * 0.5;
+    const pitch1 = 0.6 + r() * 0.35; // 垂直からの倒れ（rad）
+    const pitch2 = pitch1 + 0.35 + r() * 0.3; // 先端ほど水平に
+    const dir1 = new THREE.Vector3(
+      Math.cos(yaw) * Math.sin(pitch1), Math.cos(pitch1), Math.sin(yaw) * Math.sin(pitch1));
+    const dir2 = new THREE.Vector3(
+      Math.cos(yaw) * Math.sin(pitch2), Math.cos(pitch2), Math.sin(yaw) * Math.sin(pitch2));
+    const p0 = new THREE.Vector3(0, baseY, 0);
+    const p1 = p0.clone().addScaledVector(dir1, len1);
+    const p2 = p1.clone().addScaledVector(dir2, len2);
+    parts.push(cylinderBetween(p0, p1, 0.13, 0.07));
+    parts.push(cylinderBetween(p1, p2, 0.07, 0.03));
+    tips.push({ x: p2.x, y: p2.y, z: p2.z, len: len1 + len2 });
+  }
+
+  return { trunk: BufferGeometryUtils.mergeGeometries(parts), tips };
+}
+
+// 樹皮の色: 高さグラデーション + fbm のむら（のっぺり感を消す）
+function paintBark(geometry, bottomHex, topHex, yMin, yMax, seed) {
+  paintGradient(geometry, bottomHex, topHex, yMin, yMax);
+  const pos = geometry.attributes.position;
+  const colors = geometry.attributes.color;
+  for (let i = 0; i < pos.count; i++) {
+    const v = 0.85 + fbm(pos.getX(i) * 3 + seed, pos.getY(i) * 2.2 + pos.getZ(i) * 3, 3, seed) * 0.3;
+    colors.setXYZ(i, colors.getX(i) * v, colors.getY(i) * v, colors.getZ(i) * v);
+  }
+  return geometry;
 }
 
 // 条件を満たす地点をばら撒く（rejection sampling）
@@ -343,15 +414,15 @@ function buildInstances(geometry, material, placements, useTint = true) {
 }
 
 // 幹（樹皮法線マップ）と葉カードの樹冠を別メッシュで作り、同じ配置で重ねる
-function assembleTree(trunkGeo, crownGeo, points, place, uniforms) {
+function assembleTree(trunkGeo, crownGeo, points, place, uniforms, leafTex = leafClusterTexture()) {
   const placements = computePlacements(points, place);
   const trunkMesh = buildInstances(trunkGeo, standardMaterial({
     normalMap: barkNormalMap(),
     normalScale: new THREE.Vector2(0.5, 0.5),
     roughness: 0.9,
   }), placements, false);
-  const crownMesh = buildInstances(crownGeo, leafMaterial(uniforms), placements, true);
-  crownMesh.customDepthMaterial = leafDepthMaterial();
+  const crownMesh = buildInstances(crownGeo, leafMaterial(uniforms, { map: leafTex }), placements, true);
+  crownMesh.customDepthMaterial = leafDepthMaterial(leafTex);
   // GTAO のプリパスは alphaTest 非対応で葉カードが矩形の AO を焼くため除外する
   crownMesh.userData.excludeFromGTAO = true;
   const group = new THREE.Group();
@@ -363,67 +434,74 @@ function assembleTree(trunkGeo, crownGeo, points, place, uniforms) {
   return group;
 }
 
-function createConifers(uniforms) {
-  let trunk = BufferGeometryUtils.mergeVertices(new THREE.CylinderGeometry(0.14, 0.34, 2.6, 8, 6));
-  trunk.translate(0, 1.3, 0);
-  shapeTrunk(trunk, 2.6, 0.06, 0.5);
-  displace(trunk, 0.04, 1.5, 11);
-  paintGradient(trunk, 0x4a3826, 0x5d4630, 0, 2.6);
+// 針葉樹 1 変種: 幹 + 実体のある枝 + 枝に沿った針葉の房
+function createConiferVariant(seed) {
+  const r = mulberry32(seed);
+  // 幹: 樹冠の最上段（y6.5）近くまで細く続く
+  let trunk = BufferGeometryUtils.mergeVertices(new THREE.CylinderGeometry(0.06, 0.34, 6.4, 8, 8));
+  trunk.translate(0, 3.2, 0);
+  shapeTrunk(trunk, 6.4, 0.05 + r() * 0.04, 0.5);
 
-  // 枝スポーク構造の樹冠（段々の層シルエット）
   const card = makeLeafCard(0.42, 0.82);
-  const crown = createConiferCrown(card, 777);
+  const { crown, branches } = createConiferStructure(card, seed);
+  trunk = BufferGeometryUtils.mergeGeometries([trunk, branches]);
+  paintBark(trunk, 0x4a3826, 0x5d4630, 0, 6.4, seed % 100);
+
   // 円錐の軸から放射状 + やや上向きの法線で、樹冠全体を滑らかに陰影させる
   sphericalNormals(crown, (x, y, z) => new THREE.Vector3(x, 0.55, z));
   paintGradient(crown, 0x244a1e, 0x5c8f3c, 1.9, 6.7);
   applyBakedAO(crown);
+  return { trunk, crown };
+}
+
+function createConifers(uniforms) {
+  // シード違いの変種で「全部同じ木」感を消す
+  const variants = [7501, 7603, 7707].map(createConiferVariant);
 
   const points = scatter(1400, (x, z, h) => {
     if (h < WATER_LEVEL + 2 || h > 30) return false;
     if (terrainSlope(x, z) > 0.85) return false;
     return forestDensity(x, z) > 0.55;
   });
+  const buckets = variants.map(() => []);
+  for (const p of points) buckets[Math.floor(rand() * variants.length)].push(p);
 
-  return assembleTree(trunk, crown, points, () => ({
-    scale: 0.8 + rand() * 1.1,
-    sink: -0.15,
-    tint: { h: 0.28 + rand() * 0.06, s: 0.25 + rand() * 0.2, l: 0.5 + rand() * 0.18 },
-  }), uniforms);
+  const group = new THREE.Group();
+  variants.forEach((v, i) => {
+    if (buckets[i].length === 0) return;
+    group.add(assembleTree(v.trunk, v.crown, buckets[i], () => ({
+      scale: 0.8 + rand() * 1.1,
+      sink: -0.15,
+      tint: { h: 0.28 + rand() * 0.06, s: 0.25 + rand() * 0.2, l: 0.5 + rand() * 0.18 },
+    }), uniforms));
+  });
+  return group;
 }
 
-function createBroadleaves(uniforms) {
-  let trunk = BufferGeometryUtils.mergeVertices(new THREE.CylinderGeometry(0.18, 0.44, 3.0, 8, 6));
-  trunk.translate(0, 1.5, 0);
-  shapeTrunk(trunk, 3.0, 0.1, 0.55);
-  // 上部から放射状に枝を分岐させる
-  const branches = createBranches([
-    { base: 2.5, len: 1.9, r0: 0.13, r1: 0.05, pitch: 0.7, yaw: 0.2 },
-    { base: 2.7, len: 1.7, r0: 0.12, r1: 0.05, pitch: 0.8, yaw: 2.2 },
-    { base: 2.4, len: 1.8, r0: 0.13, r1: 0.05, pitch: 0.75, yaw: 4.3 },
-    { base: 2.9, len: 1.4, r0: 0.10, r1: 0.04, pitch: 0.5, yaw: 1.1 },
-  ]);
-  trunk = BufferGeometryUtils.mergeGeometries([trunk, branches]);
-  displace(trunk, 0.05, 1.2, 21);
-  paintGradient(trunk, 0x55432e, 0x6b5238, 0, 3.0);
+// 広葉樹 1 変種: 枝スケルトンを作り、枝先座標に葉クラスタを直接生成する
+function createBroadleafVariant(seed) {
+  const { trunk, tips } = createBroadleafSkeleton(seed);
+  paintBark(trunk, 0x55432e, 0x6b5238, 0, 3.2, seed % 100);
 
-  // 枝先に葉塊を広げる（小型カードを密に重ね、スカスカ感を消す）
   const card = makeLeafCard(0.38, 0.52);
-  const clusterSpec = [
-    { x: 0, y: 4.2, z: 0, r: 2.0, n: 640, seed: 801 },
-    { x: 1.5, y: 3.6, z: 0.4, r: 1.4, n: 380, seed: 802 },
-    { x: -1.4, y: 3.7, z: -0.3, r: 1.3, n: 350, seed: 803 },
-    { x: 0.3, y: 5.2, z: 0.5, r: 1.3, n: 340, seed: 804 },
-    { x: -0.4, y: 4.8, z: 0.9, r: 1.2, n: 300, seed: 805 },
-  ];
-  const clusters = clusterSpec.map((s) => {
-    const g = createLeafCluster(s.n, blobVolume(s.x, s.y, s.z, s.r, s.r * 0.85, s.r), card, s.seed);
+  const clusters = tips.map((t, i) => {
+    const rad = Math.min(1.35, 0.55 + t.len * 0.42);
+    const n = Math.max(120, Math.floor(rad * rad * 200));
+    const g = createLeafCluster(
+      n, blobVolume(t.x, t.y, t.z, rad, rad * 0.8, rad), card, seed * 7 + i, true);
     // 各葉塊の中心から外向きの法線で、塊ごとに滑らかなボリューム陰影にする
-    sphericalNormals(g, (x, y, z) => new THREE.Vector3(x - s.x, y - s.y, z - s.z));
+    sphericalNormals(g, (x, y, z) => new THREE.Vector3(x - t.x, y - t.y, z - t.z));
     return g;
   });
   const crown = BufferGeometryUtils.mergeGeometries(clusters);
-  paintGradient(crown, 0x33591f, 0x79aa46, 2.4, 6.2);
+  paintGradient(crown, 0x33591f, 0x79aa46, 1.8, 5.4);
   applyBakedAO(crown);
+  return { trunk, crown };
+}
+
+function createBroadleaves(uniforms) {
+  // シード違いの変種で「全部同じ木」感を消す
+  const variants = [9101, 9203, 9407].map(createBroadleafVariant);
 
   // 草原にぽつぽつ生える広葉樹（森の外側）
   const points = scatter(280, (x, z, h) => {
@@ -432,18 +510,25 @@ function createBroadleaves(uniforms) {
     const f = forestDensity(x, z);
     return f > 0.35 && f < 0.55 && rand() < 0.5;
   });
+  const buckets = variants.map(() => []);
+  for (const p of points) buckets[Math.floor(rand() * variants.length)].push(p);
 
-  return assembleTree(trunk, crown, points, () => ({
-    scale: 0.7 + rand() * 0.9,
-    sink: -0.15,
-    tint: { h: 0.24 + rand() * 0.08, s: 0.25 + rand() * 0.15, l: 0.5 + rand() * 0.15 },
-  }), uniforms);
+  const group = new THREE.Group();
+  variants.forEach((v, i) => {
+    if (buckets[i].length === 0) return;
+    group.add(assembleTree(v.trunk, v.crown, buckets[i], () => ({
+      scale: 0.7 + rand() * 0.9,
+      sink: -0.15,
+      tint: { h: 0.24 + rand() * 0.08, s: 0.25 + rand() * 0.15, l: 0.5 + rand() * 0.15 },
+    }), uniforms, broadleafTexture()));
+  });
+  return group;
 }
 
 // 森の下草（低木）。葉クラスタ基盤を再利用し、森の下層に茂みの密度感を作る
 function createBushes(uniforms) {
   const card = makeLeafCard(0.34, 0.5);
-  const bush = createLeafCluster(110, blobVolume(0, 0.45, 0, 0.75, 0.5, 0.75), card, 909);
+  const bush = createLeafCluster(110, blobVolume(0, 0.45, 0, 0.75, 0.5, 0.75), card, 909, true);
   sphericalNormals(bush, (x, y, z) => new THREE.Vector3(x, y - 0.2, z));
   paintGradient(bush, 0x2a4a1c, 0x567f35, 0, 0.95);
   applyBakedAO(bush);
@@ -461,8 +546,8 @@ function createBushes(uniforms) {
     sink: -0.08,
     tint: { h: 0.25 + rand() * 0.08, s: 0.3 + rand() * 0.2, l: 0.45 + rand() * 0.2 },
   }));
-  const mesh = buildInstances(bush, leafMaterial(uniforms), placements);
-  mesh.customDepthMaterial = leafDepthMaterial();
+  const mesh = buildInstances(bush, leafMaterial(uniforms, { map: broadleafTexture() }), placements);
+  mesh.customDepthMaterial = leafDepthMaterial(broadleafTexture());
   mesh.userData.excludeFromGTAO = true; // 樹冠と同じく矩形 AO を防ぐ
   mesh.castShadow = true;
   mesh.receiveShadow = true;
