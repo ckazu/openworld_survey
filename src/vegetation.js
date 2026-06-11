@@ -54,7 +54,7 @@ function standardMaterial(extra = {}) {
 function leafMaterial(uniforms, extra = {}) {
   const material = new THREE.MeshStandardMaterial({
     vertexColors: true,
-    roughness: 0.8,
+    roughness: 0.68, // 実物の葉の艶。下げすぎると空の映り込みで白くテカる
     metalness: 0,
     side: THREE.DoubleSide,
     map: leafClusterTexture(),
@@ -183,20 +183,65 @@ function applyBakedAO(geometry) {
   return geometry;
 }
 
-// 円錐状ボリューム（針葉樹の樹冠用）。上に行くほど細る
-function coneVolume(yMin, yMax, rBase) {
-  return (rnd) => {
-    const t = rnd();
+// 明示座標のリストに葉カードを置いてマージする（1 座標につき 2 枚を交差気味に）
+function createLeafCardsAt(positions, card, seed) {
+  const r = mulberry32(seed);
+  const cards = [];
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  const p = new THREE.Vector3();
+  const s = new THREE.Vector3();
+  for (const o of positions) {
+    for (let k = 0; k < 2; k++) {
+      const g = card.clone();
+      e.set((r() - 0.5) * Math.PI * 1.2, r() * Math.PI * 2, (r() - 0.5) * Math.PI);
+      q.setFromEuler(e);
+      p.set(o.x, o.y, o.z);
+      s.setScalar(o.scale ?? 1);
+      m.compose(p, q, s);
+      g.applyMatrix4(m);
+      const ao = new Float32Array(g.attributes.position.count).fill(o.ao ?? 1);
+      g.setAttribute('aoBake', new THREE.BufferAttribute(ao, 1));
+      cards.push(g);
+    }
+  }
+  return BufferGeometryUtils.mergeGeometries(cards);
+}
+
+// 針葉樹の樹冠: 幹から放射状に伸びる枝（下ほど長い）に沿って葉房を置き、
+// モミの木の「段々の層」シルエットを作る。円錐に一様に撒くより枝の構造が読める
+function createConiferCrown(card, seed) {
+  const r = mulberry32(seed);
+  const positions = [];
+  const whorls = 8;        // 枝の段数
+  const yMin = 2.0;
+  const yMax = 6.5;
+  for (let w = 0; w < whorls; w++) {
+    const t = w / (whorls - 1);
     const y = yMin + (yMax - yMin) * t;
-    const radial = 0.4 + 0.6 * Math.sqrt(rnd()); // 0.4..1（軸からの相対距離）
-    const r = rBase * (1 - t * 0.92) * radial;
-    const a = rnd() * Math.PI * 2;
-    return {
-      x: Math.cos(a) * r, y, z: Math.sin(a) * r,
-      scale: 0.7 + rnd() * 0.7,
-      ao: 0.62 + 0.38 * radial, // 幹に近い内側ほど陰る
-    };
-  };
+    const maxLen = (1 - t) * 2.0 + 0.25; // 下の枝ほど長い
+    const branches = 5 + Math.floor(r() * 3);
+    const yawOff = r() * Math.PI * 2;
+    for (let b = 0; b < branches; b++) {
+      const yaw = yawOff + (b / branches) * Math.PI * 2 + (r() - 0.5) * 0.5;
+      const tufts = 2 + Math.floor(r() * 2);
+      for (let k = 0; k < tufts; k++) {
+        const f = (k + 1) / tufts; // 枝に沿った位置（先端 = 1）
+        const len = maxLen * f;
+        const droop = -len * 0.18 + f * 0.08; // 枝はやや垂れ、先で持ち上がる
+        positions.push({
+          x: Math.cos(yaw) * len,
+          y: y + droop + (r() - 0.5) * 0.1,
+          z: Math.sin(yaw) * len,
+          scale: 0.55 + f * 0.5 + r() * 0.25,
+          ao: 0.6 + 0.4 * f, // 幹に近い内側ほど陰る
+        });
+      }
+    }
+  }
+  positions.push({ x: 0, y: yMax + 0.25, z: 0, scale: 0.8, ao: 1 }); // 頂部の房
+  return createLeafCardsAt(positions, card, seed + 1);
 }
 
 // 楕円球ボリューム（広葉樹の葉塊用）。球内に一様分布
@@ -322,12 +367,12 @@ function createConifers(uniforms) {
   displace(trunk, 0.04, 1.5, 11);
   paintGradient(trunk, 0x4a3826, 0x5d4630, 0, 2.6);
 
-  // 葉カードを円錐状に密に積んで樹冠を作る（小さめ・多めで紙感を抑える）
+  // 枝スポーク構造の樹冠（段々の層シルエット）
   const card = makeLeafCard(0.42, 0.82);
-  const crown = createLeafCluster(440, coneVolume(1.9, 6.4, 2.1), card, 777);
+  const crown = createConiferCrown(card, 777);
   // 円錐の軸から放射状 + やや上向きの法線で、樹冠全体を滑らかに陰影させる
   sphericalNormals(crown, (x, y, z) => new THREE.Vector3(x, 0.55, z));
-  paintGradient(crown, 0x244a1e, 0x5c8f3c, 1.8, 6.2);
+  paintGradient(crown, 0x244a1e, 0x5c8f3c, 1.9, 6.7);
   applyBakedAO(crown);
 
   const points = scatter(1400, (x, z, h) => {
@@ -358,14 +403,14 @@ function createBroadleaves(uniforms) {
   displace(trunk, 0.05, 1.2, 21);
   paintGradient(trunk, 0x55432e, 0x6b5238, 0, 3.0);
 
-  // 枝先に葉塊を広げる（小さめ・多めで紙感を抑える）
-  const card = makeLeafCard(0.46, 0.62);
+  // 枝先に葉塊を広げる（小型カードを密に重ね、スカスカ感を消す）
+  const card = makeLeafCard(0.38, 0.52);
   const clusterSpec = [
-    { x: 0, y: 4.2, z: 0, r: 2.0, n: 400, seed: 801 },
-    { x: 1.5, y: 3.6, z: 0.4, r: 1.4, n: 240, seed: 802 },
-    { x: -1.4, y: 3.7, z: -0.3, r: 1.3, n: 220, seed: 803 },
-    { x: 0.3, y: 5.2, z: 0.5, r: 1.3, n: 210, seed: 804 },
-    { x: -0.4, y: 4.8, z: 0.9, r: 1.2, n: 190, seed: 805 },
+    { x: 0, y: 4.2, z: 0, r: 2.0, n: 640, seed: 801 },
+    { x: 1.5, y: 3.6, z: 0.4, r: 1.4, n: 380, seed: 802 },
+    { x: -1.4, y: 3.7, z: -0.3, r: 1.3, n: 350, seed: 803 },
+    { x: 0.3, y: 5.2, z: 0.5, r: 1.3, n: 340, seed: 804 },
+    { x: -0.4, y: 4.8, z: 0.9, r: 1.2, n: 300, seed: 805 },
   ];
   const clusters = clusterSpec.map((s) => {
     const g = createLeafCluster(s.n, blobVolume(s.x, s.y, s.z, s.r, s.r * 0.85, s.r), card, s.seed);

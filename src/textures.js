@@ -133,9 +133,10 @@ let _leafCluster = null;
 
 // 葉群: 透明背景に小さな葉形を多数重ねた「茂みの塊」。
 // カード中心ほど密、外周ほど疎にして輪郭を不規則に切る。
+// 色相のばらつき（黄緑〜深緑）を焼き込み、単一トーンのベタ塗り感を消す。
 export function leafClusterTexture() {
   if (_leafCluster) return _leafCluster;
-  const size = 256;
+  const size = 512;
   const canvas = makeCanvas(size);
   const ctx = canvas.getContext('2d');
   let s = 12345;
@@ -143,18 +144,21 @@ export function leafClusterTexture() {
     s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff;
     return s / 0x7fffffff;
   };
-  for (let i = 0; i < 38; i++) {
-    // 中心バイアスのある配置（外周は疎らに）。枚数を絞って透かしを作り、
-    // 1 枚 1 枚を大きくして「葉」として読めるシルエットにする
+  for (let i = 0; i < 64; i++) {
+    // 中心バイアスのある配置（外周は疎らに）
     const a = rnd() * Math.PI * 2;
     const r = Math.sqrt(rnd()) * size * 0.4;
     const x = size / 2 + Math.cos(a) * r;
     const y = size / 2 + Math.sin(a) * r;
-    const len = size * (0.24 + rnd() * 0.18);
+    const len = size * (0.18 + rnd() * 0.14);
     const wid = len * (0.4 + rnd() * 0.22);
-    // 明度差で葉の重なりを感じさせる（緑味はマテリアル側の色で決まる）
-    const v = 180 + Math.floor(rnd() * 70);
-    drawLeafShape(ctx, x, y, len, wid, rnd() * Math.PI * 2, `rgb(${v - 25},${v},${v - 45})`);
+    // 明度 + 色相のばらつき: 黄緑（R 高め）〜深緑（G 優位・B 低め）
+    const v = 165 + Math.floor(rnd() * 85);
+    const hueShift = rnd(); // 0 = 深緑寄り, 1 = 黄緑寄り
+    const rr = Math.floor(v * (0.62 + hueShift * 0.36));
+    const gg = v;
+    const bb = Math.floor(v * (0.5 + (1 - hueShift) * 0.2));
+    drawLeafShape(ctx, x, y, len, wid, rnd() * Math.PI * 2, `rgb(${rr},${gg},${bb})`);
   }
   _leafCluster = new THREE.CanvasTexture(canvas);
   _leafCluster.colorSpace = THREE.SRGBColorSpace;

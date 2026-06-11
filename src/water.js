@@ -11,7 +11,10 @@ function generateWaterNormals(size = 256) {
   const heights = new Float32Array(size * size);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      heights[y * size + x] = tileableFbm((x / size) * period, (y / size) * period, period, 4, 42);
+      // 2 スケール合成（大きなうねり + 細かいさざ波）で単調さを消す
+      heights[y * size + x] =
+        tileableFbm((x / size) * period, (y / size) * period, period, 4, 42) * 0.68 +
+        tileableFbm((x / size) * period * 3, (y / size) * period * 3, period * 3, 3, 87) * 0.32;
     }
   }
 
@@ -68,12 +71,12 @@ function bakeShoreMask(size = 256) {
 }
 
 // 岸へ寄せる波頭と水際の泡を描く透明プレーン
-function createShoreFoam(uniforms) {
+function createShoreFoam(uniforms, shoreTex) {
   const geometry = new THREE.PlaneGeometry(SHORE_AREA, SHORE_AREA);
   const material = new THREE.ShaderMaterial({
     uniforms: {
       uTime: uniforms.uTime,
-      uShore: { value: bakeShoreMask() },
+      uShore: { value: shoreTex },
     },
     vertexShader: `
       varying vec2 vUv;
@@ -137,6 +140,7 @@ function createShoreFoam(uniforms) {
 export function createWater(sunDirection, uniforms) {
   const group = new THREE.Group();
   const geometry = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE);
+  const shoreTex = bakeShoreMask(); // フォームと水面の深度色で共有
 
   const water = new Water(geometry, {
     textureWidth: 1024,
@@ -158,8 +162,45 @@ export function createWater(sunDirection, uniforms) {
   water.material.uniforms.size.value = 6.0;
   water.material.transparent = true;
 
+  // 水深による色のグラデーションを Water のシェーダにパッチする。
+  // ショアマスクから水深を引き、浅瀬 = 水底の砂が透ける / 中間 = エメラルド /
+  // 深部 = 深い青緑。浅瀬ほど反射より水中の色を優位にし「水の厚み」を出す
+  {
+    const mat = water.material;
+    mat.uniforms.uShore = { value: shoreTex };
+    mat.uniforms.uShoreParams = {
+      value: new THREE.Vector4(
+        SHORE_CENTER.x - SHORE_AREA / 2,
+        SHORE_CENTER.z - SHORE_AREA / 2,
+        SHORE_AREA,
+        SHORE_RANGE * 2
+      ),
+    };
+    mat.fragmentShader = mat.fragmentShader
+      .replace(
+        'varying vec4 mirrorCoord;',
+        'uniform sampler2D uShore;\nuniform vec4 uShoreParams;\nvarying vec4 mirrorCoord;'
+      )
+      .replace(
+        'gl_FragColor = vec4( outgoingLight, alpha );',
+        `vec2 suv = (worldPosition.xz - uShoreParams.xy) / uShoreParams.z;
+        float wdepth = max(0.0, -((texture2D(uShore, suv).r - 0.5) * uShoreParams.w));
+        vec3 shallowCol = vec3(0.50, 0.45, 0.30);  // 透けて見える水底の砂
+        vec3 midCol = vec3(0.06, 0.30, 0.26);      // エメラルド
+        vec3 deepCol = vec3(0.015, 0.10, 0.14);    // 深部の青緑
+        vec3 depthCol = mix(midCol, deepCol, smoothstep(1.2, 5.5, wdepth));
+        float sandMix = 1.0 - smoothstep(0.05, 1.0, wdepth);
+        outgoingLight = mix(outgoingLight, depthCol,
+          (1.0 - reflectance) * smoothstep(0.0, 1.6, wdepth) * 0.6);
+        outgoingLight = mix(outgoingLight, shallowCol, sandMix * 0.7);
+        float aOut = mix(0.55, alpha, smoothstep(0.0, 0.9, wdepth));
+        gl_FragColor = vec4( outgoingLight, aOut );`
+      );
+    mat.needsUpdate = true;
+  }
+
   group.add(water);
-  group.add(createShoreFoam(uniforms));
+  group.add(createShoreFoam(uniforms, shoreTex));
 
   group.userData.update = (time) => {
     water.material.uniforms.time.value = time * 0.5;

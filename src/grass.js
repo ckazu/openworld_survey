@@ -1,29 +1,23 @@
 import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { WATER_LEVEL, terrainHeight } from './terrain.js';
 import { mulberry32, fbm } from './noise.js';
 import { grassBladeTexture } from './textures.js';
 
 // プレイヤー周辺のタイルにだけ草を生やす動的グラスフィールド。
 // 16m 四方のタイル単位で生成・破棄し、近距離タイルは高密度・遠距離は低密度の 2 段 LOD。
-// 1 タイル内で 3 種のブレード形状を別 InstancedMesh に振り分けて多様性を出す。
+// 1 インスタンス = 1 株（クランプ）。傾き・向き・高さを乱した複数ブレードの束で、
+// 「均一に直立する草」ではなく実物の草地の絡み・乱れを出す。3 変種を振り分ける。
 
 const TILE_SIZE = 16;
 const VIEW_TILES = 8;     // 視界半径（タイル数）≒ 128m
 const NEAR_TILES = 4;     // この距離までは高密度
-const BLADES_NEAR = 2200;
-const BLADES_FAR = 650;
+const CLUMPS_NEAR = 1150;
+const CLUMPS_FAR = 400;
 const BUILDS_PER_FRAME = 3;
 const BLADE_HEIGHT = 0.7;
 
-// 幅と反りの異なる 3 種のブレード。高さ基準は共通（BLADE_HEIGHT）に揃え、
-// 風シェーダの穂先計算（position.y / BLADE_HEIGHT）が全形状で成立するようにする。
-const BLADE_SHAPES = [
-  { width: 0.10, curl: 0.30 }, // 細く反りの強い草
-  { width: 0.16, curl: 0.22 }, // 標準
-  { width: 0.26, curl: 0.12 }, // 幅広で立った草
-];
-
-function createBladeGeometry({ width, curl }) {
+function createBladeGeometry(width, curl) {
   // 先細り + 先端が反り返るブレード。中央列を持つ 2x4 分割で、
   // 先端の尖りと縦フォールド（浅い V 字断面）を作る
   const geometry = new THREE.PlaneGeometry(width, BLADE_HEIGHT, 2, 4);
@@ -41,17 +35,54 @@ function createBladeGeometry({ width, curl }) {
   // 法線を上向きに揃えて、地面と同じ陰影で馴染ませる
   const normals = geometry.attributes.normal;
   for (let i = 0; i < normals.count; i++) normals.setXYZ(i, 0, 1, 0);
-  // 根元を強めに暗くして接地感を出し、穂先を明るく
-  const colors = new Float32Array(pos.count * 3);
-  for (let i = 0; i < pos.count; i++) {
-    const t = pos.getY(i) / BLADE_HEIGHT;
-    const v = 0.3 + t * 0.8;
-    colors[i * 3] = v;
-    colors[i * 3 + 1] = v;
-    colors[i * 3 + 2] = v;
-  }
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   return geometry;
+}
+
+// 株ジオメトリ: 細いブレード 5〜7 本を、ヨー・傾き・高さ・位置を乱してマージ。
+// 頂点カラーに「根元の暗さ × ブレードごとの色（緑/枯れ）」を焼き込む
+function createClumpGeometry(seed) {
+  const r = mulberry32(seed);
+  const blades = [];
+  const count = 5 + Math.floor(r() * 3);
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  const p = new THREE.Vector3();
+  const s = new THREE.Vector3();
+  for (let i = 0; i < count; i++) {
+    const width = 0.06 + r() * 0.08;
+    const curl = 0.1 + r() * 0.25;
+    const g = createBladeGeometry(width, curl);
+    // 傾き: 大半は 0〜30°、1 本は大きく倒れかける（〜65°）
+    const tilt = i === 0 ? 0.7 + r() * 0.45 : r() * 0.5;
+    e.set(tilt, r() * Math.PI * 2, 0, 'YXZ');
+    q.setFromEuler(e);
+    p.set((r() - 0.5) * 0.12, 0, (r() - 0.5) * 0.12);
+    const h = 0.55 + r() * 0.75;
+    s.set(1, h, 1);
+    m.compose(p, q, s);
+    g.applyMatrix4(m);
+
+    // ブレードの色: 大半は白（インスタンスカラーの緑がそのまま乗る）、
+    // 1〜2 割は枯れ色（黄褐色）を焼き込んで色の現実感を出す
+    const dry = r() < 0.09;
+    const tintR = dry ? 1.15 : 0.95 + r() * 0.1;
+    const tintG = dry ? 1.0 : 1.0;
+    const tintB = dry ? 0.55 : 0.85 + r() * 0.15;
+    const pos = g.attributes.position;
+    const colors = new Float32Array(pos.count * 3);
+    for (let j = 0; j < pos.count; j++) {
+      // 根元を強めに暗くして接地感（変換後の y を株の高さで正規化）
+      const t = Math.min(1, Math.max(0, pos.getY(j) / (BLADE_HEIGHT * h)));
+      const v = 0.3 + t * 0.8;
+      colors[j * 3] = v * tintR;
+      colors[j * 3 + 1] = v * tintG;
+      colors[j * 3 + 2] = v * tintB;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    blades.push(g);
+  }
+  return BufferGeometryUtils.mergeGeometries(blades);
 }
 
 function createGrassMaterial(uniforms) {
@@ -123,7 +154,8 @@ function createGrassMaterial(uniforms) {
 export function createGrassField(uniforms) {
   const group = new THREE.Group();
   group.name = 'grass';
-  const geometries = BLADE_SHAPES.map(createBladeGeometry);
+  // 株ジオメトリ 3 変種（シードを変えて構成を変える）
+  const geometries = [101, 202, 303].map(createClumpGeometry);
   const material = createGrassMaterial(uniforms);
 
   const tiles = new Map(); // "ix,iz" -> { meshes: InstancedMesh[], lod: 0 | 1 }
@@ -141,17 +173,17 @@ export function createGrassField(uniforms) {
 
   function buildTile(ix, iz, lod) {
     const rand = mulberry32(ix * 73856093 ^ iz * 19349663 ^ 0x9e3779b9);
-    const blades = lod === 0 ? BLADES_NEAR : BLADES_FAR;
-    // 形状ごとにインスタンスを振り分ける
-    const itemsByShape = BLADE_SHAPES.map(() => []);
-    for (let i = 0; i < blades; i++) {
+    const clumps = lod === 0 ? CLUMPS_NEAR : CLUMPS_FAR;
+    // 変種ごとにインスタンスを振り分ける
+    const itemsByShape = geometries.map(() => []);
+    for (let i = 0; i < clumps; i++) {
       const x = (ix + rand()) * TILE_SIZE;
       const z = (iz + rand()) * TILE_SIZE;
       const h = terrainHeight(x, z);
       if (h < WATER_LEVEL + 1.2 || h > 30) continue;
       // 草の生え方にムラをつける
       if (fbm(x * 0.015 + 50, z * 0.015 + 80, 2) < 0.33) continue;
-      const shape = Math.floor(rand() * BLADE_SHAPES.length);
+      const shape = Math.floor(rand() * geometries.length);
       itemsByShape[shape].push({ x, z, h, r: rand(), s: rand(), t: rand() });
     }
 
