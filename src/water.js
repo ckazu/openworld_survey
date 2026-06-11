@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Water } from 'three/addons/objects/Water.js';
-import { WORLD_SIZE, WATER_LEVEL, terrainHeight } from './terrain.js';
+import { WORLD_SIZE, WATER_LEVEL, LAKE, terrainHeight } from './terrain.js';
 import { tileableFbm } from './noise.js';
 
 // three の Water（平面リフレクション）を使った反射する水面。
@@ -44,7 +44,7 @@ function generateWaterNormals(size = 256) {
 // 湖周辺の「水面からの高さ」をテクスチャに焼く（ショアマスク）。
 // フォームシェーダはこれを引いて水際・浅瀬を判定する
 const SHORE_AREA = 500; // 湖を覆う焼き込み範囲（m）
-const SHORE_CENTER = { x: -150, z: 120 }; // terrain.js の LAKE と同じ中心
+const SHORE_CENTER = LAKE; // 湖の中心（terrain.js と共有し、座標のずれを防ぐ）
 const SHORE_RANGE = 8; // 高さの符号化レンジ（±m）
 
 function bakeShoreMask(size = 256) {
@@ -108,9 +108,10 @@ function createShoreFoam(uniforms) {
         float depth = -h; // 水深
         // 水際の泡（細い縁）。ノイズで縁を揺らす
         float edgeWobble = fnoise(vWorld * 1.7 + uTime * 0.15) * 0.15;
-        float edge = smoothstep(0.28 + edgeWobble, 0.03, depth);
+        // 逆順引数の smoothstep は GLSL 仕様で未定義のため 1.0 - smoothstep を使う
+        float edge = 1.0 - smoothstep(0.03, 0.28 + edgeWobble, depth);
         // 浅瀬を岸へゆっくり進む波頭（深さの等高線を時間で押し出す）
-        float shallow = smoothstep(2.2, 0.3, depth);
+        float shallow = 1.0 - smoothstep(0.3, 2.2, depth);
         float front = sin(depth * 5.0 - uTime * 0.7 + fnoise(vWorld * 0.35) * 2.2) * 0.5 + 0.5;
         float wave = smoothstep(0.88, 0.99, front) * shallow;
         // 細かい泡の粒で塗りを割る

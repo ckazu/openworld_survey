@@ -96,7 +96,7 @@ function createGrassMaterial(uniforms) {
           // プレイヤーの踏み分け: 足元の草を外側へ押し倒す
           vec2 pd = w - uPlayerPos;
           float pl = length(pd);
-          float push = smoothstep(1.1, 0.25, pl) * bend;
+          float push = (1.0 - smoothstep(0.25, 1.1, pl)) * bend; // 逆順 smoothstep は GLSL 仕様で未定義
           mvPosition.xz += (pd / max(pl, 0.001)) * push * 0.45;
           mvPosition.y -= push * 0.3;
         }

@@ -5,7 +5,8 @@ export const WORLD_SIZE = 800;
 export const WATER_LEVEL = -0.6;
 
 // メインの湖。地形をすり鉢状に窪ませて必ず水面下になるようにする
-const LAKE = { x: -150, z: 120, radius: 130, depth: 9 };
+// （water.js のショアマスクも同じ中心を参照する）
+export const LAKE = { x: -150, z: 120, radius: 130, depth: 9 };
 
 const SEGMENTS = 512;
 const SAND_BAND = 1.6; // 水際から砂浜になる高さの幅
