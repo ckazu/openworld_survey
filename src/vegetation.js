@@ -68,10 +68,11 @@ function leafMaterial(uniforms, extra = {}) {
     shader.uniforms.uSunDir = uniforms.uSunDir;
     shader.uniforms.uSunColor = uniforms.uSunColor;
     shader.uniforms.uTime = uniforms.uTime;
-    // 樹冠の風揺れ。草と同じ「風の波」をワールド座標から拾い、
-    // 上の葉ほど大きく揺らす（幹元 1.8m から上に向かって増幅）
+    // 階層的な風（GPU Gems 3, Crysis）: ①樹全体の大曲げ（ワールド座標の gust）
+    // ②枝（タフト）単位の位相差スウェイ ③葉の高周波フラッター の 3 階層合成。
+    // aWind = (タフト位相, 幹からの距離による重み)
     shader.vertexShader =
-      'uniform float uTime;\n' +
+      'uniform float uTime;\nattribute vec2 aWind;\n' +
       shader.vertexShader.replace(
         '#include <project_vertex>',
         `vec4 mvPosition = vec4(transformed, 1.0);
@@ -79,12 +80,18 @@ function leafMaterial(uniforms, extra = {}) {
           mvPosition = instanceMatrix * mvPosition;
         #endif
         {
-          float sway = clamp((position.y - 1.8) / 4.5, 0.0, 1.0);
+          float hgt = clamp((position.y - 1.0) / 5.0, 0.0, 1.0);
           vec2 w = mvPosition.xz;
+          // ① 樹全体のうねり（森を渡る風）
           float gust = sin(uTime * 0.9 + w.x * 0.05 + w.y * 0.04)
                      + sin(uTime * 1.7 + w.x * 0.13 - w.y * 0.09) * 0.5;
-          float rustle = sin(uTime * 3.2 + position.x * 2.1 + position.z * 1.7) * 0.25;
-          mvPosition.xz += vec2(0.912, 0.41) * (gust * 0.10 + rustle * 0.05) * sway;
+          // ② 枝単位のスウェイ（タフトごとに位相が異なる）
+          float branch = sin(uTime * 2.2 + aWind.x) * aWind.y;
+          // ③ 葉のフラッター（高周波・微小）
+          float flutter = sin(uTime * 6.5 + aWind.x * 3.0 + position.x * 5.0 + position.y * 4.0);
+          mvPosition.xz += vec2(0.912, 0.41)
+            * (gust * 0.08 * hgt + branch * 0.06 + flutter * 0.015 * aWind.y);
+          mvPosition.y += branch * 0.02 + flutter * 0.008;
         }
         mvPosition = modelViewMatrix * mvPosition;
         gl_Position = projectionMatrix * mvPosition;`
@@ -145,6 +152,9 @@ function createLeafCluster(count, place, card, seed, flat = false) {
   const e = new THREE.Euler();
   const p = new THREE.Vector3();
   const s = new THREE.Vector3();
+  // 階層風（GPU Gems 3, Crysis）: クラスタ＝枝先タフトを 1 単位として
+  // 同位相で揺らすため、タフト共通の位相を属性に焼く
+  const windPhase = r() * Math.PI * 2;
   for (let i = 0; i < count; i++) {
     const o = place(r);
     const g = card.clone();
@@ -159,8 +169,16 @@ function createLeafCluster(count, place, card, seed, flat = false) {
     s.setScalar(o.scale ?? 1);
     m.compose(p, q, s);
     g.applyMatrix4(m);
-    const ao = new Float32Array(g.attributes.position.count).fill(o.ao ?? 1);
+    const n = g.attributes.position.count;
+    const ao = new Float32Array(n).fill(o.ao ?? 1);
     g.setAttribute('aoBake', new THREE.BufferAttribute(ao, 1));
+    const wind = new Float32Array(n * 2);
+    const weight = Math.min(1, Math.hypot(o.x, o.z) / 2.2); // 幹から遠いほど大きく揺れる
+    for (let j = 0; j < n; j++) {
+      wind[j * 2] = windPhase;
+      wind[j * 2 + 1] = weight;
+    }
+    g.setAttribute('aWind', new THREE.BufferAttribute(wind, 2));
     cards.push(g);
   }
   return BufferGeometryUtils.mergeGeometries(cards);
@@ -204,6 +222,9 @@ function createLeafCardsAt(positions, card, seed) {
   const p = new THREE.Vector3();
   const s = new THREE.Vector3();
   for (const o of positions) {
+    // 階層風: 房（同一座標の 3 枚）を 1 単位として同位相で揺らす
+    const windPhase = r() * Math.PI * 2;
+    const weight = Math.min(1, Math.hypot(o.x, o.z) / 2.2);
     for (let k = 0; k < 3; k++) {
       const g = card.clone();
       e.set((r() - 0.5) * Math.PI * 1.2, r() * Math.PI * 2, (r() - 0.5) * Math.PI);
@@ -212,8 +233,15 @@ function createLeafCardsAt(positions, card, seed) {
       s.setScalar(o.scale ?? 1);
       m.compose(p, q, s);
       g.applyMatrix4(m);
-      const ao = new Float32Array(g.attributes.position.count).fill(o.ao ?? 1);
+      const n = g.attributes.position.count;
+      const ao = new Float32Array(n).fill(o.ao ?? 1);
       g.setAttribute('aoBake', new THREE.BufferAttribute(ao, 1));
+      const wind = new Float32Array(n * 2);
+      for (let j = 0; j < n; j++) {
+        wind[j * 2] = windPhase;
+        wind[j * 2 + 1] = weight;
+      }
+      g.setAttribute('aWind', new THREE.BufferAttribute(wind, 2));
       cards.push(g);
     }
   }
@@ -314,40 +342,97 @@ function cylinderBetween(p0, p1, r0, r1) {
   return g;
 }
 
-// 広葉樹のスケルトン: 幹 + 曲がった主枝（2 セグメントチェーン）。
-// 葉クラスタを置くべき枝先座標（tips）を返し、樹冠との接続を構造的に保証する
+// Space Colonization（Runions et al., NPH 2007）による広葉樹の枝生成。
+// 樹冠ボリュームに撒いた引力点に向かって枝が伸び、本物の分岐階層
+// （幹→大枝→小枝→末端）が生成される。太さはパイプモデル（Murray の法則）。
+// tips には葉タフトを置くべき末端ノードを返す
 function createBroadleafSkeleton(seed) {
   const r = mulberry32(seed);
+  const INFLUENCE = 2.4;   // 引力点がノードを引き寄せる半径
+  const KILL = 0.4;        // 点が消える距離
+  const STEP = 0.34;       // 1 反復の成長距離
+  const CROWN = { x: 0, y: 3.4, z: 0, rx: 2.3, ry: 1.7, rz: 2.3 };
+
+  // 引力点: 樹冠の楕円球内に一様分布
+  const attractors = [];
+  for (let i = 0; i < 250; i++) {
+    const theta = r() * Math.PI * 2;
+    const phi = Math.acos(2 * r() - 1);
+    const rr = Math.cbrt(r());
+    attractors.push(new THREE.Vector3(
+      CROWN.x + Math.sin(phi) * Math.cos(theta) * CROWN.rx * rr,
+      CROWN.y + Math.cos(phi) * CROWN.ry * rr,
+      CROWN.z + Math.sin(phi) * Math.sin(theta) * CROWN.rz * rr
+    ));
+  }
+
+  // ノード: 幹の柱（成長の起点）。parent=-1 が根
+  const nodes = [{ p: new THREE.Vector3(0, 0, 0), parent: -1 }];
+  for (let y = 0.45; y <= 1.85; y += 0.45) {
+    nodes.push({ p: new THREE.Vector3((r() - 0.5) * 0.1, y, (r() - 0.5) * 0.1), parent: nodes.length - 1 });
+  }
+
+  // 成長反復
+  const dir = new THREE.Vector3();
+  for (let iter = 0; iter < 120 && attractors.length > 0; iter++) {
+    // 各引力点を影響半径内の最近傍ノードに紐付け
+    const pull = new Map(); // nodeIndex -> 方向ベクトル和
+    for (const a of attractors) {
+      let bi = -1;
+      let bd = INFLUENCE;
+      for (let i = 0; i < nodes.length; i++) {
+        const d = a.distanceTo(nodes[i].p);
+        if (d < bd) { bd = d; bi = i; }
+      }
+      if (bi >= 0) {
+        dir.subVectors(a, nodes[bi].p).normalize();
+        if (!pull.has(bi)) pull.set(bi, new THREE.Vector3());
+        pull.get(bi).add(dir);
+      }
+    }
+    if (pull.size === 0) break;
+    // 紐付いたノードから新ノードを伸ばす（わずかに上向きバイアス）
+    for (const [i, v] of pull) {
+      v.normalize().y += 0.08;
+      const np = nodes[i].p.clone().addScaledVector(v.normalize(), STEP);
+      nodes.push({ p: np, parent: i });
+    }
+    // 殺到半径内の引力点を消す
+    for (let k = attractors.length - 1; k >= 0; k--) {
+      for (let i = nodes.length - 1; i >= 0; i--) {
+        if (attractors[k].distanceTo(nodes[i].p) < KILL) {
+          attractors.splice(k, 1);
+          break;
+        }
+      }
+    }
+  }
+
+  // パイプモデルで太さを決める: 末端 r_min、親 = (Σ 子^2.5)^(1/2.5)
+  const childCount = new Array(nodes.length).fill(0);
+  for (const n of nodes) if (n.parent >= 0) childCount[n.parent]++;
+  const radius = new Array(nodes.length).fill(0);
+  // 末端から根へ向かって伝播（ノードは生成順 = 親が先なので逆順走査でよい）
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    if (childCount[i] === 0) radius[i] = 0.022;
+    if (nodes[i].parent >= 0) {
+      const p = nodes[i].parent;
+      radius[p] = Math.pow(Math.pow(radius[p], 2.5) + Math.pow(radius[i], 2.5), 1 / 2.5);
+    }
+  }
+
+  // エッジをテーパー円柱にしてマージ。根元はフレア
   const parts = [];
   const tips = [];
-
-  // 幹: 根元から樹冠中心まで細くなりながら続く
-  let trunk = BufferGeometryUtils.mergeVertices(new THREE.CylinderGeometry(0.17, 0.44, 3.2, 8, 6));
-  trunk.translate(0, 1.6, 0);
-  shapeTrunk(trunk, 3.2, 0.08 + r() * 0.06, 0.55);
-  parts.push(trunk);
-  tips.push({ x: 0, y: 3.5, z: 0, len: 1.2 }); // 頂部クラスタ
-
-  // 主枝: 幹上部から 4〜5 本。下段は急角度、先で水平寄りに曲がる
-  const boughs = 4 + Math.floor(r() * 2);
-  const yawOff = r() * Math.PI * 2;
-  for (let b = 0; b < boughs; b++) {
-    const yaw = yawOff + (b / boughs) * Math.PI * 2 + (r() - 0.5) * 0.6;
-    const baseY = 1.6 + r() * 0.9;
-    const len1 = 0.9 + r() * 0.5;
-    const len2 = 0.8 + r() * 0.5;
-    const pitch1 = 0.6 + r() * 0.35; // 垂直からの倒れ（rad）
-    const pitch2 = pitch1 + 0.35 + r() * 0.3; // 先端ほど水平に
-    const dir1 = new THREE.Vector3(
-      Math.cos(yaw) * Math.sin(pitch1), Math.cos(pitch1), Math.sin(yaw) * Math.sin(pitch1));
-    const dir2 = new THREE.Vector3(
-      Math.cos(yaw) * Math.sin(pitch2), Math.cos(pitch2), Math.sin(yaw) * Math.sin(pitch2));
-    const p0 = new THREE.Vector3(0, baseY, 0);
-    const p1 = p0.clone().addScaledVector(dir1, len1);
-    const p2 = p1.clone().addScaledVector(dir2, len2);
-    parts.push(cylinderBetween(p0, p1, 0.13, 0.07));
-    parts.push(cylinderBetween(p1, p2, 0.07, 0.03));
-    tips.push({ x: p2.x, y: p2.y, z: p2.z, len: len1 + len2 });
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    if (n.parent >= 0) {
+      const rp = Math.min(0.5, radius[n.parent]);
+      const rc = Math.min(0.45, radius[i]);
+      const flare = n.parent === 0 ? 1.5 : 1.0; // 最下段は根元を広げる
+      parts.push(cylinderBetween(nodes[n.parent].p, n.p, rp * flare, rc));
+    }
+    if (childCount[i] === 0) tips.push({ x: n.p.x, y: n.p.y, z: n.p.z });
   }
 
   return { trunk: BufferGeometryUtils.mergeGeometries(parts), tips };
@@ -478,23 +563,27 @@ function createConifers(uniforms) {
   return group;
 }
 
-// 広葉樹 1 変種: 枝スケルトンを作り、枝先座標に葉クラスタを直接生成する
+// 広葉樹 1 変種: Space Colonization の末端ノードごとに小さな葉タフトを置く。
+// 葉が「枝の末端に付く」という本物の構造が、大クラスタ方式より自然に出る
 function createBroadleafVariant(seed) {
   const { trunk, tips } = createBroadleafSkeleton(seed);
-  paintBark(trunk, 0x55432e, 0x6b5238, 0, 3.2, seed % 100);
+  paintBark(trunk, 0x55432e, 0x6b5238, 0, 5.2, seed % 100);
 
   const card = makeLeafCard(0.38, 0.52);
   const clusters = tips.map((t, i) => {
-    const rad = Math.min(1.35, 0.55 + t.len * 0.42);
-    const n = Math.max(120, Math.floor(rad * rad * 200));
-    const g = createLeafCluster(
-      n, blobVolume(t.x, t.y, t.z, rad, rad * 0.8, rad), card, seed * 7 + i, true);
-    // 各葉塊の中心から外向きの法線で、塊ごとに滑らかなボリューム陰影にする
-    sphericalNormals(g, (x, y, z) => new THREE.Vector3(x - t.x, y - t.y, z - t.z));
-    return g;
+    // 樹冠中心からの距離で AO（内側の末端ほど陰る）
+    const depth = Math.min(1, Math.hypot(t.x, (t.y - 3.4) / 0.74, t.z) / 2.3);
+    const place = blobVolume(t.x, t.y, t.z, 0.36, 0.3, 0.36);
+    return createLeafCluster(9, (rnd) => {
+      const o = place(rnd);
+      o.ao = 0.6 + 0.4 * depth;
+      return o;
+    }, card, seed * 13 + i, true);
   });
   const crown = BufferGeometryUtils.mergeGeometries(clusters);
-  paintGradient(crown, 0x33591f, 0x79aa46, 1.8, 5.4);
+  // 樹冠全体をひとつのボリュームとして陰影させる（中心から外向きの法線）
+  sphericalNormals(crown, (x, y, z) => new THREE.Vector3(x, (y - 3.4) * 0.8, z));
+  paintGradient(crown, 0x33591f, 0x79aa46, 1.8, 5.6);
   applyBakedAO(crown);
   return { trunk, crown };
 }
