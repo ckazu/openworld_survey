@@ -84,6 +84,48 @@ composer.addPass(gtaoPass);
 
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(size.width, size.height), 0.25, 0.7, 0.85);
 composer.addPass(bloomPass);
+
+// スクリーンスペース光芒（サンシャフト）。太陽のスクリーン座標へ向かう
+// 放射状ブラーで、木々や雲の隙間から差す光の筋を近似する（リニアHDRで動作）
+const shaftPass = new ShaderPass({
+  name: 'LightShaftShader',
+  uniforms: {
+    tDiffuse: { value: null },
+    uSunScreen: { value: new THREE.Vector2(0.5, 0.5) },
+    uStrength: { value: 0 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform vec2 uSunScreen;
+    uniform float uStrength;
+    varying vec2 vUv;
+    void main() {
+      vec4 base = texture2D(tDiffuse, vUv);
+      if (uStrength <= 0.001) { gl_FragColor = base; return; }
+      vec2 delta = (uSunScreen - vUv) / 56.0;
+      vec2 uv = vUv;
+      float illum = 1.0;
+      vec3 acc = vec3(0.0);
+      for (int i = 0; i < 56; i++) {
+        uv += delta;
+        vec3 s = texture2D(tDiffuse, uv).rgb;
+        float lum = dot(s, vec3(0.2126, 0.7152, 0.0722));
+        // 太陽近傍の高輝度だけを拾い、遮蔽（暗い木立）で筋が生まれる
+        acc += s * smoothstep(1.8, 4.0, lum) * illum;
+        illum *= 0.94;
+      }
+      gl_FragColor = vec4(base.rgb + acc / 56.0 * uStrength, base.a);
+    }
+  `,
+});
+composer.addPass(shaftPass);
 composer.addPass(new OutputPass());
 
 // 仕上げのカラーグレーディング（彩度・コントラスト・ビネット）
@@ -128,6 +170,25 @@ window.addEventListener('resize', () => {
 const clock = new THREE.Clock();
 let hudTimer = 0;
 
+// 光芒の太陽スクリーン座標・強度を更新（背後/画面外ではフェードアウト）
+const sunWorld = new THREE.Vector3();
+const camForward = new THREE.Vector3();
+function updateLightShafts() {
+  camera.getWorldDirection(camForward);
+  const facing = camForward.dot(sunDirection);
+  let strength = 0;
+  if (facing > 0.1) {
+    sunWorld.copy(camera.position).addScaledVector(sunDirection, 1000).project(camera);
+    shaftPass.uniforms.uSunScreen.value.set(sunWorld.x * 0.5 + 0.5, sunWorld.y * 0.5 + 0.5);
+    // 画面端から外れるほど弱める
+    const offX = Math.max(0, Math.abs(sunWorld.x) - 1);
+    const offY = Math.max(0, Math.abs(sunWorld.y) - 1);
+    const off = Math.min(1, Math.hypot(offX, offY) / 0.6);
+    strength = (1 - off) * 0.35;
+  }
+  shaftPass.uniforms.uStrength.value = strength;
+}
+
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
   const time = clock.elapsedTime;
@@ -139,6 +200,7 @@ renderer.setAnimationLoop(() => {
   grass.update(camera.position);
   ambience.update(dt, time, camera.position);
   followPlayer(camera.position);
+  updateLightShafts();
 
   hudTimer += dt;
   if (hudTimer > 0.25) {
