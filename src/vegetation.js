@@ -64,6 +64,28 @@ function leafMaterial(uniforms, extra = {}) {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDir = uniforms.uSunDir;
     shader.uniforms.uSunColor = uniforms.uSunColor;
+    shader.uniforms.uTime = uniforms.uTime;
+    // 樹冠の風揺れ。草と同じ「風の波」をワールド座標から拾い、
+    // 上の葉ほど大きく揺らす（幹元 1.8m から上に向かって増幅）
+    shader.vertexShader =
+      'uniform float uTime;\n' +
+      shader.vertexShader.replace(
+        '#include <project_vertex>',
+        `vec4 mvPosition = vec4(transformed, 1.0);
+        #ifdef USE_INSTANCING
+          mvPosition = instanceMatrix * mvPosition;
+        #endif
+        {
+          float sway = clamp((position.y - 1.8) / 4.5, 0.0, 1.0);
+          vec2 w = mvPosition.xz;
+          float gust = sin(uTime * 0.9 + w.x * 0.05 + w.y * 0.04)
+                     + sin(uTime * 1.7 + w.x * 0.13 - w.y * 0.09) * 0.5;
+          float rustle = sin(uTime * 3.2 + position.x * 2.1 + position.z * 1.7) * 0.25;
+          mvPosition.xz += vec2(0.912, 0.41) * (gust * 0.10 + rustle * 0.05) * sway;
+        }
+        mvPosition = modelViewMatrix * mvPosition;
+        gl_Position = projectionMatrix * mvPosition;`
+      );
     shader.fragmentShader =
       'uniform vec3 uSunDir;\nuniform vec3 uSunColor;\n' +
       shader.fragmentShader.replace(
