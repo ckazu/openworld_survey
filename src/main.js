@@ -4,6 +4,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { createTerrain, terrainHeight, forestDensity } from './terrain.js';
 import { createWater } from './water.js';
 import { createSky } from './sky.js';
@@ -30,14 +31,20 @@ const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerH
 // レイヤー 1 = 水面反射に映さないオブジェクト（草・花）
 camera.layers.enable(1);
 
-// 共有ユニフォーム（草の揺れアニメーション）
-const sharedUniforms = { uTime: { value: 0 } };
+// 共有ユニフォーム（草の揺れアニメーション・サブサーフェス透過）
+const sharedUniforms = {
+  uTime: { value: 0 },
+  uSunDir: { value: new THREE.Vector3() },
+  uSunColor: { value: new THREE.Color(0xffe9c4) },
+  uPlayerPos: { value: new THREE.Vector2() }, // 草の踏み分け用（ワールド xz）
+};
 
 const { sunDirection, followPlayer } = createSky(scene, renderer);
+sharedUniforms.uSunDir.value.copy(sunDirection);
 scene.add(createTerrain());
-const water = createWater(sunDirection);
+const water = createWater(sunDirection, sharedUniforms);
 scene.add(water);
-scene.add(createVegetation());
+scene.add(createVegetation(sharedUniforms));
 const grass = createGrassField(sharedUniforms);
 scene.add(grass.group);
 const ambience = createAmbience();
@@ -57,8 +64,68 @@ const renderTarget = new THREE.WebGLRenderTarget(size.width, size.height, {
 });
 const composer = new EffectComposer(renderer, renderTarget);
 composer.addPass(new RenderPass(scene, camera));
+
+// スクリーンスペース AO（GTAO）。接地・葉の重なり・岩の窪みを暗めて立体感を強める
+const gtaoPass = new GTAOPass(scene, camera, size.width, size.height);
+gtaoPass.output = GTAOPass.OUTPUT.Default;
+gtaoPass.updateGtaoMaterial({
+  radius: 0.7,            // ワールド単位（草 0.7m・木 5m に対する遮蔽半径）
+  distanceExponent: 1.0,
+  thickness: 1.0,
+  scale: 1.3,            // AO の濃さ
+  samples: 16,
+  distanceFallOff: 1.0,
+  screenSpaceRadius: false,
+});
+gtaoPass.updatePdMaterial({
+  lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, radiusExponent: 1, rings: 2, samples: 16,
+});
+composer.addPass(gtaoPass);
+
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(size.width, size.height), 0.25, 0.7, 0.85);
 composer.addPass(bloomPass);
+
+// スクリーンスペース光芒（サンシャフト）。太陽のスクリーン座標へ向かう
+// 放射状ブラーで、木々や雲の隙間から差す光の筋を近似する（リニアHDRで動作）
+const shaftPass = new ShaderPass({
+  name: 'LightShaftShader',
+  uniforms: {
+    tDiffuse: { value: null },
+    uSunScreen: { value: new THREE.Vector2(0.5, 0.5) },
+    uStrength: { value: 0 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform vec2 uSunScreen;
+    uniform float uStrength;
+    varying vec2 vUv;
+    void main() {
+      vec4 base = texture2D(tDiffuse, vUv);
+      if (uStrength <= 0.001) { gl_FragColor = base; return; }
+      vec2 delta = (uSunScreen - vUv) / 56.0;
+      vec2 uv = vUv;
+      float illum = 1.0;
+      vec3 acc = vec3(0.0);
+      for (int i = 0; i < 56; i++) {
+        uv += delta;
+        vec3 s = texture2D(tDiffuse, uv).rgb;
+        float lum = dot(s, vec3(0.2126, 0.7152, 0.0722));
+        // 太陽近傍の高輝度だけを拾い、遮蔽（暗い木立）で筋が生まれる
+        acc += s * smoothstep(1.8, 4.0, lum) * illum;
+        illum *= 0.94;
+      }
+      gl_FragColor = vec4(base.rgb + acc / 56.0 * uStrength, base.a);
+    }
+  `,
+});
+composer.addPass(shaftPass);
 composer.addPass(new OutputPass());
 
 // 仕上げのカラーグレーディング（彩度・コントラスト・ビネット）
@@ -97,21 +164,43 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   composer.setSize(window.innerWidth, window.innerHeight);
+  gtaoPass.setSize(window.innerWidth, window.innerHeight);
 });
 
 const clock = new THREE.Clock();
 let hudTimer = 0;
+
+// 光芒の太陽スクリーン座標・強度を更新（背後/画面外ではフェードアウト）
+const sunWorld = new THREE.Vector3();
+const camForward = new THREE.Vector3();
+function updateLightShafts() {
+  camera.getWorldDirection(camForward);
+  const facing = camForward.dot(sunDirection);
+  let strength = 0;
+  if (facing > 0.1) {
+    sunWorld.copy(camera.position).addScaledVector(sunDirection, 1000).project(camera);
+    shaftPass.uniforms.uSunScreen.value.set(sunWorld.x * 0.5 + 0.5, sunWorld.y * 0.5 + 0.5);
+    // 画面端から外れるほど弱める
+    const offX = Math.max(0, Math.abs(sunWorld.x) - 1);
+    const offY = Math.max(0, Math.abs(sunWorld.y) - 1);
+    const off = Math.min(1, Math.hypot(offX, offY) / 0.6);
+    strength = (1 - off) * 0.35;
+  }
+  shaftPass.uniforms.uStrength.value = strength;
+}
 
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
   const time = clock.elapsedTime;
 
   sharedUniforms.uTime.value = time;
+  sharedUniforms.uPlayerPos.value.set(camera.position.x, camera.position.z);
   water.userData.update(time);
   if (!window.__demo?.freeze) player.update(dt);
   grass.update(camera.position);
   ambience.update(dt, time, camera.position);
   followPlayer(camera.position);
+  updateLightShafts();
 
   hudTimer += dt;
   if (hudTimer > 0.25) {
