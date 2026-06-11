@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { WORLD_SIZE, terrainHeight } from './terrain.js';
 import { mulberry32 } from './noise.js';
+import { cloudPuffTexture } from './textures.js';
 
 // 世界に「生きている感」を足す要素: 流れる雲・旋回する鳥の群れ・プレイヤー周辺の蝶
 
@@ -9,40 +9,91 @@ const rand = mulberry32(0xc10d5);
 
 // ---------------------------------------------------------------- 雲
 
+// 雲パフ用のポイントスプライトシェーダ。
+// THREE.Sprite ではなく Points を使うのは、GTAOPass が内部の法線/深度パスで
+// Points を自動的に除外するため（Sprite は除外されず矩形のアーティファクトが出る）
+function createCloudMaterial(texture) {
+  return new THREE.ShaderMaterial({
+    uniforms: THREE.UniformsUtils.merge([
+      THREE.UniformsLib.fog,
+      { uMap: { value: texture } },
+    ]),
+    vertexShader: `
+      attribute float aSize;
+      attribute float aOpacity;
+      attribute vec3 aColor;
+      varying float vOpacity;
+      varying vec3 vColor;
+      #include <fog_pars_vertex>
+      void main() {
+        vOpacity = aOpacity;
+        vColor = aColor;
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = aSize * (900.0 / -mvPosition.z);
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
+      }`,
+    fragmentShader: `
+      uniform sampler2D uMap;
+      varying float vOpacity;
+      varying vec3 vColor;
+      #include <fog_pars_fragment>
+      void main() {
+        vec4 tex = texture2D(uMap, gl_PointCoord);
+        gl_FragColor = vec4(vColor * tex.rgb, tex.a * vOpacity);
+        #include <fog_fragment>
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+    transparent: true,
+    depthWrite: false,
+    fog: true,
+  });
+}
+
 function createClouds() {
   const group = new THREE.Group();
-  const material = new THREE.MeshLambertMaterial({
-    color: 0xffffff,
-    emissive: 0x848e98,
-    transparent: true,
-    opacity: 0.85,
-  });
-  material.reflectivity = 0;
+  const material = createCloudMaterial(cloudPuffTexture());
 
   const clouds = [];
   for (let i = 0; i < 14; i++) {
-    const blobs = [];
-    const blobCount = 3 + Math.floor(rand() * 4);
-    for (let b = 0; b < blobCount; b++) {
-      // mergeVertices でスムースシェーディングにして、もくもくした雲にする
-      const blob = BufferGeometryUtils.mergeVertices(new THREE.IcosahedronGeometry(4 + rand() * 5, 1));
-      blob.scale(1.6, 0.55, 1.1);
-      blob.translate((b - blobCount / 2) * 6 + rand() * 3, rand() * 2.5, (rand() - 0.5) * 6);
-      blobs.push(blob);
+    // 1 つの雲 = ソフトパフを「中央が盛り上がるかまぼこ型」に並べた Points
+    const puffs = 6 + Math.floor(rand() * 5);
+    const width = 36 + rand() * 30;
+    const scale = 1.2 + rand() * 1.8;
+    const positions = new Float32Array(puffs * 3);
+    const sizes = new Float32Array(puffs);
+    const opacities = new Float32Array(puffs);
+    const colors = new Float32Array(puffs * 3);
+    for (let b = 0; b < puffs; b++) {
+      const t = puffs === 1 ? 0.5 : b / (puffs - 1);
+      const lift = Math.sin(t * Math.PI);
+      positions[b * 3] = ((t - 0.5) * width + (rand() - 0.5) * 6) * scale;
+      positions[b * 3 + 1] = (lift * 6 + (rand() - 0.5) * 3) * scale;
+      positions[b * 3 + 2] = (rand() - 0.5) * 10 * scale;
+      sizes[b] = (38 + rand() * 22) * (0.7 + lift * 0.5) * scale;
+      opacities[b] = 0.6 + rand() * 0.25;
+      // 下側のパフほど青灰に落として陰を擬似する
+      const shade = 0.78 + lift * 0.22;
+      colors[b * 3] = shade * 0.96;
+      colors[b * 3 + 1] = shade * 0.98;
+      colors[b * 3 + 2] = shade;
     }
-    const cloudGeometry = BufferGeometryUtils.mergeGeometries(blobs);
-    cloudGeometry.computeVertexNormals(); // 非一様スケール後の法線を整える
-    const mesh = new THREE.Mesh(cloudGeometry, material);
-    const scale = 1.5 + rand() * 2.5;
-    mesh.scale.setScalar(scale);
-    mesh.position.set(
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+    geometry.setAttribute('aOpacity', new THREE.BufferAttribute(opacities, 1));
+    geometry.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
+    const cloud = new THREE.Points(geometry, material);
+    cloud.frustumCulled = false; // ポイントサイズ分の余白を持つため自前カリングはしない
+    cloud.position.set(
       (rand() - 0.5) * WORLD_SIZE * 1.4,
       135 + rand() * 55,
       (rand() - 0.5) * WORLD_SIZE * 1.4
     );
     // 雲は反射に映すと綺麗なのでレイヤー 0 のまま
-    group.add(mesh);
-    clouds.push({ mesh, speed: 1.2 + rand() * 1.6 });
+    group.add(cloud);
+    clouds.push({ mesh: cloud, speed: 1.2 + rand() * 1.6 });
   }
 
   function update(dt) {

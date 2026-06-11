@@ -161,6 +161,37 @@ export function leafClusterTexture() {
   return _leafCluster;
 }
 
+let _cloudPuff = null;
+
+// 雲パフ: 放射状フォールオフに FBM で凹凸をつけたソフトなアルファ。
+// 複数スプライトを重ねて「ふんわりした雲」を作るための素材
+export function cloudPuffTexture() {
+  if (_cloudPuff) return _cloudPuff;
+  const size = 128;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = (x / size) * 2 - 1;
+      const v = (y / size) * 2 - 1;
+      const d = Math.hypot(u, v);
+      // 中心 1 → 縁 0 のフォールオフを FBM で揺らし、輪郭をもくもくさせる
+      const wobble = tileableFbm(x / size * 5, y / size * 5, 5, 3, 91) - 0.5;
+      const alpha = Math.max(0, Math.min(1, 1 - d * (1.45 + wobble * 1.2)));
+      const a = Math.pow(alpha, 1.6) * 255;
+      const i = (y * size + x) * 4;
+      data[i] = data[i + 1] = data[i + 2] = 255;
+      data[i + 3] = a;
+    }
+  }
+  _cloudPuff = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  _cloudPuff.colorSpace = THREE.SRGBColorSpace;
+  _cloudPuff.minFilter = THREE.LinearMipmapLinearFilter;
+  _cloudPuff.magFilter = THREE.LinearFilter;
+  _cloudPuff.generateMipmaps = true;
+  _cloudPuff.needsUpdate = true;
+  return _cloudPuff;
+}
+
 let _grassBlade = null;
 
 // 草ブレード: 下辺から上端の一点へ収束する葉形。中央に薄い葉脈。
