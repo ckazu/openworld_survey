@@ -478,9 +478,11 @@ function createFlowers() {
   const group = new THREE.Group();
   const stems = buildInstances(stem, stemMaterial, placements, false);
   const heads = buildInstances(head, headMaterial, placements, true);
-  // 反射に映す必要はない
-  stems.layers.set(1);
-  heads.layers.set(1);
+  // 木陰では花も暗くする。反射に映す必要はない
+  for (const m of [stems, heads]) {
+    m.receiveShadow = true;
+    m.layers.set(1);
+  }
   group.add(stems, heads);
   return group;
 }

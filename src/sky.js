@@ -29,10 +29,11 @@ export function createSky(scene, renderer) {
   pmrem.dispose();
   scene.add(sky); // envScene.add で外れるので戻す
   scene.environment = envRT.texture;
-  scene.environmentIntensity = 0.42;
+  scene.environmentIntensity = 0.3;
 
   // 太陽光（シャドウはプレイヤー周辺だけに絞って解像度を確保する）
-  const sunLight = new THREE.DirectionalLight(0xffe9c4, 2.4);
+  // 環境光に対して太陽を強めにし、影のコントラストを立たせる
+  const sunLight = new THREE.DirectionalLight(0xffe9c4, 3.1);
   sunLight.castShadow = true;
   sunLight.shadow.mapSize.set(4096, 4096);
   const SHADOW_RANGE = 110;
@@ -48,7 +49,8 @@ export function createSky(scene, renderer) {
   scene.add(sunLight.target);
 
   // IBL が主のアンビエントになるのでヘミライトは控えめに
-  const hemiLight = new THREE.HemisphereLight(0xbfd8ec, 0x5a6e4a, 0.55);
+  // （強すぎると影が淡くなり立体感が失われる）
+  const hemiLight = new THREE.HemisphereLight(0xbfd8ec, 0x5a6e4a, 0.4);
   scene.add(hemiLight);
 
   // 青みがかった空気遠近感

@@ -171,6 +171,8 @@ export function createGrassField(uniforms) {
       });
       mesh.instanceColor.needsUpdate = true;
       mesh.frustumCulled = true;
+      // 木陰では草も暗くなる（影を受けないと木陰だけ草が浮いて見える）
+      mesh.receiveShadow = true;
       // レイヤー 1 = 水面反射に映さないオブジェクト（反射描画を節約）
       mesh.layers.set(1);
       meshes.push(mesh);
