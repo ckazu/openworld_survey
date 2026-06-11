@@ -41,7 +41,7 @@ const sharedUniforms = {
 const { sunDirection, followPlayer } = createSky(scene, renderer);
 sharedUniforms.uSunDir.value.copy(sunDirection);
 scene.add(createTerrain());
-const water = createWater(sunDirection);
+const water = createWater(sunDirection, sharedUniforms);
 scene.add(water);
 scene.add(createVegetation(sharedUniforms));
 const grass = createGrassField(sharedUniforms);
