@@ -222,6 +222,38 @@ export function flowerTexture() {
   return _flower;
 }
 
+let _butterflyWing = null;
+
+// 蝶の片翅: 前翅・後翅の 2 ローブを持つシルエット。
+// 矩形のままだと羽ばたきの瞬間に「白い板」に見えるため輪郭を抜く
+export function butterflyWingTexture() {
+  if (_butterflyWing) return _butterflyWing;
+  const size = 64;
+  const canvas = makeCanvas(size);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'rgb(255,255,255)';
+  // 前翅（上の大きなローブ）
+  ctx.beginPath();
+  ctx.ellipse(size * 0.42, size * 0.3, size * 0.4, size * 0.28, -0.35, 0, Math.PI * 2);
+  ctx.fill();
+  // 後翅（下の小さなローブ）
+  ctx.beginPath();
+  ctx.ellipse(size * 0.3, size * 0.68, size * 0.28, size * 0.26, 0.3, 0, Math.PI * 2);
+  ctx.fill();
+  // 翅脈をうっすら
+  ctx.strokeStyle = 'rgba(120,110,100,0.35)';
+  ctx.lineWidth = 1.5;
+  for (const a of [-0.5, -0.15, 0.25]) {
+    ctx.beginPath();
+    ctx.moveTo(size * 0.05, size * 0.45);
+    ctx.lineTo(size * (0.5 + Math.cos(a) * 0.45), size * (0.45 + Math.sin(a) * 0.45));
+    ctx.stroke();
+  }
+  _butterflyWing = new THREE.CanvasTexture(canvas);
+  _butterflyWing.colorSpace = THREE.SRGBColorSpace;
+  return _butterflyWing;
+}
+
 let _grassBlade = null;
 
 // 草ブレード: 下辺から上端の一点へ収束する葉形。中央に薄い葉脈。

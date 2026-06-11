@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { WORLD_SIZE, terrainHeight } from './terrain.js';
 import { mulberry32 } from './noise.js';
-import { cloudPuffTexture } from './textures.js';
+import { cloudPuffTexture, butterflyWingTexture } from './textures.js';
 
 // 世界に「生きている感」を足す要素: 流れる雲・旋回する鳥の群れ・プレイヤー周辺の蝶
 
@@ -178,7 +178,12 @@ function createButterflies() {
   wingGeometry.translate(0.11, 0, 0);
   const palette = [0xffffff, 0xffd966, 0xe69ad8, 0x9ad8e6];
   const materials = palette.map(
-    (c) => new THREE.MeshBasicMaterial({ color: c, side: THREE.DoubleSide })
+    (c) => new THREE.MeshBasicMaterial({
+      color: c,
+      side: THREE.DoubleSide,
+      map: butterflyWingTexture(),
+      alphaTest: 0.5, // 翅のシルエットで輪郭を抜く（羽ばたき中の「白い板」を防ぐ）
+    })
   );
 
   const butterflies = [];
