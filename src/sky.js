@@ -1,5 +1,51 @@
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
+import { WATER_LEVEL } from './terrain.js';
+
+// 高さフォグ: fog チャンクをグローバルにパッチし、フォグ密度を
+// 「ワールド高さで指数減衰」させる。湖面・谷に溜まる朝もやが出る。
+// fog: true の全マテリアル（地形・木・草・水・雲）に一括で効く。
+// マテリアルのコンパイル前（モジュール読み込み時）に差し替えること。
+THREE.ShaderChunk.fog_pars_vertex = /* glsl */ `
+#ifdef USE_FOG
+  varying float vFogDepth;
+  varying float vFogWorldY;
+#endif`;
+THREE.ShaderChunk.fog_vertex = /* glsl */ `
+#ifdef USE_FOG
+  vFogDepth = - mvPosition.z;
+  // transformed はカスタム ShaderMaterial（水・雲）に存在しないため
+  // 属性 position を使う（風の曲げ分の高さ誤差はもやには無視できる）
+  vec4 fogWorldPos = vec4( position, 1.0 );
+  #ifdef USE_INSTANCING
+    fogWorldPos = instanceMatrix * fogWorldPos;
+  #endif
+  vFogWorldY = ( modelMatrix * fogWorldPos ).y;
+#endif`;
+THREE.ShaderChunk.fog_pars_fragment = /* glsl */ `
+#ifdef USE_FOG
+  uniform vec3 fogColor;
+  varying float vFogDepth;
+  varying float vFogWorldY;
+  #ifdef FOG_EXP2
+    uniform float fogDensity;
+  #else
+    uniform float fogNear;
+    uniform float fogFar;
+  #endif
+#endif`;
+THREE.ShaderChunk.fog_fragment = /* glsl */ `
+#ifdef USE_FOG
+  #ifdef FOG_EXP2
+    // 水面の高さを基準に、低いところほどフォグを濃くする（朝もや）
+    float fogHeight = exp( -max( 0.0, vFogWorldY - ${WATER_LEVEL.toFixed(2)} ) * 0.16 );
+    float fogDensityH = fogDensity * ( 1.0 + fogHeight * 2.6 );
+    float fogFactor = 1.0 - exp( - fogDensityH * fogDensityH * vFogDepth * vFogDepth );
+  #else
+    float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+  #endif
+  gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
+#endif`;
 
 // 空・太陽光・フォグ・環境マップ（IBL）をまとめてセットアップする
 export function createSky(scene, renderer) {
