@@ -152,6 +152,69 @@ const bokehPass = new BokehPass(scene, camera, {
   maxblur: 0.0045,
 });
 composer.addPass(bokehPass);
+
+// オールドレンズ風のレンズフレア。太陽と画面中心を結ぶ軸上のゴースト列 +
+// 太陽周りのハロー。太陽が樹冠に隠れているときはシェーダ内の輝度タップで減衰。
+// レンズ内現象なので DOF の後・トーンマップ前に挿入する
+const flarePass = new ShaderPass({
+  name: 'LensFlareShader',
+  uniforms: {
+    tDiffuse: { value: null },
+    uSunScreen: { value: new THREE.Vector2(0.5, 0.5) },
+    uStrength: { value: 0 },
+    uAspect: { value: 1 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform vec2 uSunScreen;
+    uniform float uStrength;
+    uniform float uAspect;
+    varying vec2 vUv;
+    // やわらかい円ゴースト（アスペクト補正済み距離）
+    float ghost(vec2 uv, vec2 pos, float size) {
+      vec2 d = uv - pos;
+      d.x *= uAspect;
+      return pow(max(0.0, 1.0 - length(d) / size), 2.4);
+    }
+    void main() {
+      vec4 base = texture2D(tDiffuse, vUv);
+      if (uStrength <= 0.001) { gl_FragColor = base; return; }
+      // 太陽位置周辺の HDR 輝度をタップし、遮蔽（木立の陰）でフレアを消す
+      vec3 sunArea = texture2D(tDiffuse, uSunScreen).rgb
+                   + texture2D(tDiffuse, uSunScreen + vec2(0.01, 0.0)).rgb
+                   + texture2D(tDiffuse, uSunScreen - vec2(0.01, 0.0)).rgb
+                   + texture2D(tDiffuse, uSunScreen + vec2(0.0, 0.013)).rgb
+                   + texture2D(tDiffuse, uSunScreen - vec2(0.0, 0.013)).rgb;
+      float sunLum = dot(sunArea / 5.0, vec3(0.2126, 0.7152, 0.0722));
+      float occl = smoothstep(0.8, 2.6, sunLum);
+      if (occl <= 0.001) { gl_FragColor = base; return; }
+
+      vec2 axis = vec2(0.5) - uSunScreen; // 太陽 → 画面中心の軸
+      vec3 acc = vec3(0.0);
+      // ゴースト列（位置・サイズ・色は古いコーティングの薄い色味）
+      acc += vec3(1.0, 0.55, 0.25) * ghost(vUv, uSunScreen + axis * 0.45, 0.045) * 0.55;
+      acc += vec3(0.35, 0.75, 0.6) * ghost(vUv, uSunScreen + axis * 0.85, 0.075) * 0.4;
+      acc += vec3(0.55, 0.45, 0.85) * ghost(vUv, uSunScreen + axis * 1.25, 0.05) * 0.45;
+      acc += vec3(1.0, 0.8, 0.5) * ghost(vUv, uSunScreen + axis * 1.6, 0.11) * 0.3;
+      acc += vec3(0.4, 0.85, 0.8) * ghost(vUv, uSunScreen + axis * 0.2, 0.03) * 0.5;
+      // 太陽周りの薄い暖色ハロー（ガウス状のリング）
+      vec2 dh = vUv - uSunScreen;
+      dh.x *= uAspect;
+      float ring = exp(-pow((length(dh) - 0.24) * 16.0, 2.0));
+      acc += vec3(1.0, 0.72, 0.45) * ring * 0.3;
+
+      gl_FragColor = vec4(base.rgb + acc * uStrength * occl, base.a);
+    }
+  `,
+});
+composer.addPass(flarePass);
 composer.addPass(new OutputPass());
 
 // 仕上げのカラーグレーディング + レンズ効果
@@ -174,14 +237,19 @@ const gradePass = new ShaderPass({
       return fract(sin(dot(p, vec2(12.9898, 78.233)) + uTime * 61.0) * 43758.5453);
     }
     void main() {
+      // バレル歪曲（微量）: 古い広角レンズの樽型。端のサンプルが内側に
+      // 寄る向きなので範囲外参照は起きない
+      vec2 tc = vUv - 0.5;
+      float r2 = dot(tc, tc);
+      vec2 buv = 0.5 + tc * (1.0 - 0.05 * r2);
       // 色収差: 画面端ほど RGB をラジアルにずらす（微量）
-      vec2 toCenter = vUv - 0.5;
+      vec2 toCenter = buv - 0.5;
       float d = length(toCenter);
       vec2 ca = toCenter * d * d * 0.018;
       vec4 c = vec4(
-        texture2D(tDiffuse, vUv - ca).r,
-        texture2D(tDiffuse, vUv).g,
-        texture2D(tDiffuse, vUv + ca).b,
+        texture2D(tDiffuse, buv - ca).r,
+        texture2D(tDiffuse, buv).g,
+        texture2D(tDiffuse, buv + ca).b,
         1.0
       );
       float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
@@ -231,6 +299,10 @@ function updateLightShafts() {
     strength = (1 - off) * 0.22;
   }
   shaftPass.uniforms.uStrength.value = strength;
+  // レンズフレアは光芒と同じ太陽座標・強度を共有（強度スケールのみ別）
+  flarePass.uniforms.uSunScreen.value.copy(shaftPass.uniforms.uSunScreen.value);
+  flarePass.uniforms.uStrength.value = strength * 2.6;
+  flarePass.uniforms.uAspect.value = camera.aspect;
 }
 
 renderer.setAnimationLoop(() => {
