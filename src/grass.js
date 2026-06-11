@@ -71,12 +71,13 @@ function createGrassMaterial(uniforms) {
     shader.uniforms.uTime = uniforms.uTime;
     shader.uniforms.uSunDir = uniforms.uSunDir;
     shader.uniforms.uSunColor = uniforms.uSunColor;
+    shader.uniforms.uPlayerPos = uniforms.uPlayerPos;
 
     // 風。インスタンス変換後のワールド座標で曲げることで、
     // ブレードの向きに依存しない「草原を渡る風のうねり」を作る。
     // 穂先の度合い vTip をフラグメントへ渡し、逆光透過に使う。
     shader.vertexShader =
-      'uniform float uTime;\nvarying float vTip;\n' +
+      'uniform float uTime;\nuniform vec2 uPlayerPos;\nvarying float vTip;\n' +
       shader.vertexShader.replace(
         '#include <project_vertex>',
         `vec4 mvPosition = vec4(transformed, 1.0);
@@ -92,6 +93,12 @@ function createGrassMaterial(uniforms) {
                      + sin(uTime * 2.3 + w.x * 0.16 - w.y * 0.11) * 0.5;
           float flutter = sin(uTime * 5.0 + w.x * 1.7 + w.y * 1.3) * 0.10;
           mvPosition.xz += vec2(0.912, 0.41) * (gust * 0.16 + flutter) * bend;
+          // プレイヤーの踏み分け: 足元の草を外側へ押し倒す
+          vec2 pd = w - uPlayerPos;
+          float pl = length(pd);
+          float push = smoothstep(1.1, 0.25, pl) * bend;
+          mvPosition.xz += (pd / max(pl, 0.001)) * push * 0.45;
+          mvPosition.y -= push * 0.3;
         }
         mvPosition = modelViewMatrix * mvPosition;
         gl_Position = projectionMatrix * mvPosition;`

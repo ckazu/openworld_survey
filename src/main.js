@@ -36,6 +36,7 @@ const sharedUniforms = {
   uTime: { value: 0 },
   uSunDir: { value: new THREE.Vector3() },
   uSunColor: { value: new THREE.Color(0xffe9c4) },
+  uPlayerPos: { value: new THREE.Vector2() }, // 草の踏み分け用（ワールド xz）
 };
 
 const { sunDirection, followPlayer } = createSky(scene, renderer);
@@ -132,6 +133,7 @@ renderer.setAnimationLoop(() => {
   const time = clock.elapsedTime;
 
   sharedUniforms.uTime.value = time;
+  sharedUniforms.uPlayerPos.value.set(camera.position.x, camera.position.z);
   water.userData.update(time);
   if (!window.__demo?.freeze) player.update(dt);
   grass.update(camera.position);
