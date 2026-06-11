@@ -208,9 +208,9 @@ function createConifers() {
   displace(trunk, 0.04, 1.5, 11);
   paintGradient(trunk, 0x4a3826, 0x5d4630, 0, 2.6);
 
-  // 葉カードを円錐状に密に積んで樹冠を作る
-  const card = makeLeafCard(0.5, 0.95);
-  const crown = createLeafCluster(360, coneVolume(1.9, 6.4, 2.1), card, 777);
+  // 葉カードを円錐状に密に積んで樹冠を作る（小さめ・多めで紙感を抑える）
+  const card = makeLeafCard(0.42, 0.82);
+  const crown = createLeafCluster(440, coneVolume(1.9, 6.4, 2.1), card, 777);
   paintGradient(crown, 0x244a1e, 0x5c8f3c, 1.8, 6.2);
 
   const points = scatter(1400, (x, z, h) => {
@@ -240,14 +240,14 @@ function createBroadleaves() {
   displace(trunk, 0.05, 1.2, 21);
   paintGradient(trunk, 0x55432e, 0x6b5238, 0, 3.0);
 
-  // 枝先に葉塊を広げる
-  const card = makeLeafCard(0.62, 0.8);
+  // 枝先に葉塊を広げる（小さめ・多めで紙感を抑える）
+  const card = makeLeafCard(0.46, 0.62);
   const clusterSpec = [
-    { x: 0, y: 4.2, z: 0, r: 2.0, n: 280, seed: 801 },
-    { x: 1.5, y: 3.6, z: 0.4, r: 1.4, n: 170, seed: 802 },
-    { x: -1.4, y: 3.7, z: -0.3, r: 1.3, n: 160, seed: 803 },
-    { x: 0.3, y: 5.2, z: 0.5, r: 1.3, n: 150, seed: 804 },
-    { x: -0.4, y: 4.8, z: 0.9, r: 1.2, n: 140, seed: 805 },
+    { x: 0, y: 4.2, z: 0, r: 2.0, n: 400, seed: 801 },
+    { x: 1.5, y: 3.6, z: 0.4, r: 1.4, n: 240, seed: 802 },
+    { x: -1.4, y: 3.7, z: -0.3, r: 1.3, n: 220, seed: 803 },
+    { x: 0.3, y: 5.2, z: 0.5, r: 1.3, n: 210, seed: 804 },
+    { x: -0.4, y: 4.8, z: 0.9, r: 1.2, n: 190, seed: 805 },
   ];
   const clusters = clusterSpec.map((s) =>
     createLeafCluster(s.n, blobVolume(s.x, s.y, s.z, s.r, s.r * 0.85, s.r), card, s.seed));
@@ -337,7 +337,7 @@ function createFlowers() {
     }
     stem.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   }
-  const petal = new THREE.PlaneGeometry(0.16, 0.16).translate(0, 0.58, 0);
+  const petal = new THREE.PlaneGeometry(0.11, 0.11).translate(0, 0.57, 0);
   const petalCross = petal.clone().rotateY(Math.PI / 2);
   const count = petal.attributes.position.count;
   const white = new Float32Array(count * 3).fill(1);
@@ -358,11 +358,12 @@ function createFlowers() {
     return terrainSlope(x, z) < 0.5;
   });
 
+  // Bloom 閾値（0.85）を超えて白飛びしないよう明度を抑える
   const palette = [
-    { h: 0.12, s: 0.85, l: 0.62 }, // 黄
-    { h: 0.0, s: 0.0, l: 0.95 },   // 白
-    { h: 0.9, s: 0.55, l: 0.72 },  // 桃
-    { h: 0.75, s: 0.45, l: 0.68 }, // 紫
+    { h: 0.12, s: 0.85, l: 0.6 },  // 黄
+    { h: 0.0, s: 0.0, l: 0.82 },   // 白
+    { h: 0.9, s: 0.55, l: 0.68 },  // 桃
+    { h: 0.75, s: 0.45, l: 0.64 }, // 紫
   ];
   const placements = computePlacements(points, () => {
     const p = palette[Math.floor(rand() * palette.length)];
