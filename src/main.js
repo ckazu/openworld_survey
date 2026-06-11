@@ -4,6 +4,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { createTerrain, terrainHeight, forestDensity } from './terrain.js';
 import { createWater } from './water.js';
 import { createSky } from './sky.js';
@@ -62,6 +63,24 @@ const renderTarget = new THREE.WebGLRenderTarget(size.width, size.height, {
 });
 const composer = new EffectComposer(renderer, renderTarget);
 composer.addPass(new RenderPass(scene, camera));
+
+// スクリーンスペース AO（GTAO）。接地・葉の重なり・岩の窪みを暗めて立体感を強める
+const gtaoPass = new GTAOPass(scene, camera, size.width, size.height);
+gtaoPass.output = GTAOPass.OUTPUT.Default;
+gtaoPass.updateGtaoMaterial({
+  radius: 0.7,            // ワールド単位（草 0.7m・木 5m に対する遮蔽半径）
+  distanceExponent: 1.0,
+  thickness: 1.0,
+  scale: 1.3,            // AO の濃さ
+  samples: 16,
+  distanceFallOff: 1.0,
+  screenSpaceRadius: false,
+});
+gtaoPass.updatePdMaterial({
+  lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, radiusExponent: 1, rings: 2, samples: 16,
+});
+composer.addPass(gtaoPass);
+
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(size.width, size.height), 0.25, 0.7, 0.85);
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
@@ -102,6 +121,7 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   composer.setSize(window.innerWidth, window.innerHeight);
+  gtaoPass.setSize(window.innerWidth, window.innerHeight);
 });
 
 const clock = new THREE.Clock();
