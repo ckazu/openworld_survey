@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { WORLD_SIZE, WATER_LEVEL, terrainHeight, terrainSlope, forestDensity } from './terrain.js';
 import { mulberry32, fbm } from './noise.js';
-import { barkNormalMap, rockNormalMap, rockRoughnessMap, leafClusterTexture } from './textures.js';
+import { barkNormalMap, rockNormalMap, rockRoughnessMap, leafClusterTexture, flowerTexture } from './textures.js';
 
 const rand = mulberry32(20260611);
 
@@ -422,7 +422,8 @@ function createRocks() {
 }
 
 function createFlowers() {
-  // 細い茎 + 十字の花弁。花弁だけインスタンスカラーで彩色する
+  // 細い茎 + 花弁テクスチャの上向きヘッド。十字の白い矩形をやめ、
+  // 5 弁シルエットのアルファカットアウトで「花」として読めるようにする。
   // 草（高さ ~0.7m）から花が覗くように少し背を高くする
   const stem = new THREE.PlaneGeometry(0.03, 0.55).translate(0, 0.275, 0);
   {
@@ -436,19 +437,22 @@ function createFlowers() {
     }
     stem.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   }
-  const petal = new THREE.PlaneGeometry(0.11, 0.11).translate(0, 0.57, 0);
-  const petalCross = petal.clone().rotateY(Math.PI / 2);
-  const count = petal.attributes.position.count;
-  const white = new Float32Array(count * 3).fill(1);
-  petal.setAttribute('color', new THREE.BufferAttribute(white, 3));
-  petalCross.setAttribute('color', new THREE.BufferAttribute(white.slice(), 3));
-  const geometry = BufferGeometryUtils.mergeGeometries([stem, petal, petalCross]);
-
-  const material = new THREE.MeshLambertMaterial({
+  const stemMaterial = new THREE.MeshLambertMaterial({
     vertexColors: true,
     side: THREE.DoubleSide,
   });
-  material.reflectivity = 0;
+  stemMaterial.reflectivity = 0;
+
+  // 上向きの花ヘッド（少し傾けて表情をつける。向きは配置のヨー回転でばらける）
+  const head = new THREE.PlaneGeometry(0.16, 0.16)
+    .rotateX(-Math.PI / 2 + 0.35)
+    .translate(0, 0.56, 0);
+  const headMaterial = new THREE.MeshLambertMaterial({
+    side: THREE.DoubleSide,
+    map: flowerTexture(),
+    alphaTest: 0.5,
+  });
+  headMaterial.reflectivity = 0;
 
   // 開けた草原（森の外）に群生させる
   const points = scatter(9000, (x, z, h) => {
@@ -471,10 +475,14 @@ function createFlowers() {
       tint: { h: p.h + rand() * 0.02, s: p.s, l: p.l + rand() * 0.06 },
     };
   });
-  const mesh = buildInstances(geometry, material, placements);
+  const group = new THREE.Group();
+  const stems = buildInstances(stem, stemMaterial, placements, false);
+  const heads = buildInstances(head, headMaterial, placements, true);
   // 反射に映す必要はない
-  mesh.layers.set(1);
-  return mesh;
+  stems.layers.set(1);
+  heads.layers.set(1);
+  group.add(stems, heads);
+  return group;
 }
 
 export function createVegetation(uniforms) {

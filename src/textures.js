@@ -192,6 +192,36 @@ export function cloudPuffTexture() {
   return _cloudPuff;
 }
 
+let _flower = null;
+
+// 花: 5 枚の花弁を放射状に並べたシルエット + 中心の花芯。
+// RGB は白基調（花弁の色はインスタンスカラーで変調）、花芯だけ黄色を焼き込む
+export function flowerTexture() {
+  if (_flower) return _flower;
+  const size = 64;
+  const canvas = makeCanvas(size);
+  const ctx = canvas.getContext('2d');
+  const c = size / 2;
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    ctx.save();
+    ctx.translate(c, c);
+    ctx.rotate(a);
+    ctx.beginPath();
+    ctx.ellipse(0, -size * 0.27, size * 0.14, size * 0.26, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgb(255,252,250)';
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.1, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgb(245,200,70)';
+  ctx.fill();
+  _flower = new THREE.CanvasTexture(canvas);
+  _flower.colorSpace = THREE.SRGBColorSpace;
+  return _flower;
+}
+
 let _grassBlade = null;
 
 // 草ブレード: 下辺から上端の一点へ収束する葉形。中央に薄い葉脈。
