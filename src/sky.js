@@ -1,14 +1,19 @@
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { WATER_LEVEL } from './terrain.js';
+import {
+  sunLightColor,
+  sunColorE,
+  kAboveHor,
+  nightFactor,
+  fall,
+  rampScalar,
+} from './celestial.js';
 
-// 物理ベースの空気遠近法（Hoffman & Preetham, SIGGRAPH 2002 の単一散乱）:
-// fog チャンクをグローバルにパッチし、消散 + Rayleigh/Mie の内散乱で霞ませる。
-// 視線と太陽のなす角 θ により、太陽方向は明るく暖かく・反対側は青灰色になる。
-// 既存の高さ変調（湖面・谷に溜まる朝もや）も密度に乗せる。
-// 太陽方向・色は静的なので GLSL 定数として焼き込む（uniform 伝搬が不要）。
-// fog: true の全マテリアルに一括で効く。各マテリアルのコンパイル前に呼ぶこと。
-function patchFogChunks(sunDir, sunColor) {
+// 物理ベースの空気遠近法（Hoffman & Preetham, SIGGRAPH 2002 の単一散乱）を
+// グローバルな fog チャンクとして実装。太陽が動くため、太陽方向・放射色は
+// 定数ではなく uniform にし、夜は内散乱を消して深い紺のフォグへ移行する。
+function patchFogChunks() {
   THREE.ShaderChunk.fog_pars_vertex = /* glsl */ `
 #ifdef USE_FOG
   varying float vFogDepth;
@@ -17,8 +22,7 @@ function patchFogChunks(sunDir, sunColor) {
   THREE.ShaderChunk.fog_vertex = /* glsl */ `
 #ifdef USE_FOG
   vFogDepth = - mvPosition.z;
-  // transformed はカスタム ShaderMaterial（水・雲）に存在しないため
-  // 属性 position を使う（風の曲げ分の誤差はフォグには無視できる）
+  // transformed はカスタム ShaderMaterial（水・雲）に存在しないため属性 position を使う
   vec4 fogWorldPos4 = vec4( position, 1.0 );
   #ifdef USE_INSTANCING
     fogWorldPos4 = instanceMatrix * fogWorldPos4;
@@ -30,6 +34,10 @@ function patchFogChunks(sunDir, sunColor) {
   uniform vec3 fogColor;
   varying float vFogDepth;
   varying vec3 vFogWorldPos;
+  uniform vec3 uFogSunDir;
+  uniform vec3 uFogSunColor;
+  uniform float uFogNight;
+  uniform vec3 uFogNightColor;
   #ifdef FOG_EXP2
     uniform float fogDensity;
   #else
@@ -37,27 +45,22 @@ function patchFogChunks(sunDir, sunColor) {
     uniform float fogFar;
   #endif
 #endif`;
-  const sd = `vec3(${sunDir.x.toFixed(4)}, ${sunDir.y.toFixed(4)}, ${sunDir.z.toFixed(4)})`;
-  const sc = `vec3(${sunColor.r.toFixed(3)}, ${sunColor.g.toFixed(3)}, ${sunColor.b.toFixed(3)})`;
   THREE.ShaderChunk.fog_fragment = /* glsl */ `
 #ifdef USE_FOG
   #ifdef FOG_EXP2
   {
-    // --- Hoffman & Preetham 2002: L = L0·ext + L_in·(1−ext) ---
-    const vec3 FOG_SUN_DIR = ${sd};
-    const vec3 FOG_SUN_E = ${sc} * 1.15;        // 太陽放射照度（トーン調整込み）
-    const vec3 FOG_RAYLEIGH_TINT = vec3(0.42, 0.60, 1.0); // 青空の散乱色
-    const vec3 FOG_MIE_TINT = vec3(1.0, 0.86, 0.66);      // 暖色のエアロゾル
+    vec3 FOG_SUN_DIR = uFogSunDir;
+    vec3 FOG_SUN_E = uFogSunColor * 1.15;        // 太陽放射照度（昼=暖色, 夜=0）
+    const vec3 FOG_RAYLEIGH_TINT = vec3(0.42, 0.60, 1.0);
+    const vec3 FOG_MIE_TINT = vec3(1.0, 0.86, 0.66);
     vec3 fogView = vFogWorldPos - cameraPosition;
     float fogDist = length(fogView);
     float cosT = dot(fogView / max(fogDist, 1e-4), FOG_SUN_DIR);
-    // 水面の高さを基準に、低いところほど密度を上げる（朝もや）
     float fogHeight = exp( -max( 0.0, vFogWorldPos.y - ${WATER_LEVEL.toFixed(2)} ) * 0.16 );
     float dens = fogDensity * ( 1.0 + fogHeight * 1.8 );
-    float bR = dens * 0.62;                      // Rayleigh への配分
-    float bM = dens * 0.38;                      // Mie への配分
+    float bR = dens * 0.62;
+    float bM = dens * 0.38;
     float ext = exp( -(bR + bM) * fogDist );
-    // 位相関数: Rayleigh + Henyey-Greenstein (g=0.5)
     float phR = 0.0597 * ( 1.0 + cosT * cosT );
     const float g = 0.5;
     float phM = 0.0796 * ( 1.0 - g ) * ( 1.0 - g )
@@ -65,6 +68,8 @@ function patchFogChunks(sunDir, sunColor) {
     vec3 inscatter = FOG_SUN_E
       * ( bR * phR * FOG_RAYLEIGH_TINT + bM * phM * FOG_MIE_TINT ) / ( bR + bM )
       * 6.5;
+    inscatter *= ( 1.0 - uFogNight );          // 夜は橙の内散乱を消す
+    inscatter += uFogNightColor * uFogNight;    // 夜の底色（真っ黒にしない）
     gl_FragColor.rgb = gl_FragColor.rgb * ext + inscatter * ( 1.0 - ext );
   }
   #else
@@ -74,50 +79,150 @@ function patchFogChunks(sunDir, sunColor) {
 #endif`;
 }
 
-// 空・太陽光・フォグ・環境マップ（IBL）をまとめてセットアップする
-export function createSky(scene, renderer) {
+// fog 対応マテリアルへ共有の太陽 uniform を参照で注入する（1 つ更新すれば全体に伝播）。
+export function applyDynamicFog(material, fog) {
+  if (!material || material.fog === false) return material;
+  if (material.userData.__dynFog) return material; // 冪等
+  material.userData.__dynFog = true;
+  const refs = (u) => {
+    u.uFogSunDir = fog.uFogSunDir;
+    u.uFogSunColor = fog.uFogSunColor;
+    u.uFogNight = fog.uFogNight;
+    u.uFogNightColor = fog.uFogNightColor;
+  };
+  if (material.isShaderMaterial) {
+    refs(material.uniforms); // すでに deep-clone 済みの uniforms へ参照を足す
+    return material;
+  }
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = function (shader, renderer) {
+    if (prev) prev.call(this, shader, renderer);
+    refs(shader.uniforms);
+  };
+  material.needsUpdate = true;
+  return material;
+}
+
+// 降順 stops [{a, rgb}] の色ランプ（線形）
+function rampColor(stops, a, out) {
+  const n = stops.length;
+  if (a >= stops[0].a) {
+    const c = stops[0].rgb;
+    return out.setRGB(c[0], c[1], c[2], THREE.LinearSRGBColorSpace);
+  }
+  if (a <= stops[n - 1].a) {
+    const c = stops[n - 1].rgb;
+    return out.setRGB(c[0], c[1], c[2], THREE.LinearSRGBColorSpace);
+  }
+  for (let i = 0; i < n - 1; i++) {
+    const hi = stops[i];
+    const lo = stops[i + 1];
+    if (a <= hi.a && a >= lo.a) {
+      const t = (a - lo.a) / (hi.a - lo.a);
+      return out.setRGB(
+        lo.rgb[0] + (hi.rgb[0] - lo.rgb[0]) * t,
+        lo.rgb[1] + (hi.rgb[1] - lo.rgb[1]) * t,
+        lo.rgb[2] + (hi.rgb[2] - lo.rgb[2]) * t,
+        THREE.LinearSRGBColorSpace
+      );
+    }
+  }
+  return out;
+}
+
+// 大気係数のランプ（太陽高度 度）
+const SKY_TURB = [
+  { a: 60, v: 1.8 }, { a: 30, v: 2.4 }, { a: 12, v: 5.0 }, { a: 4, v: 9.0 },
+  { a: 0, v: 10.0 }, { a: -6, v: 7.0 }, { a: -12, v: 2.0 }, { a: -18, v: 0.3 },
+];
+const SKY_RAY = [
+  { a: 60, v: 1.0 }, { a: 30, v: 1.4 }, { a: 12, v: 2.2 }, { a: 4, v: 3.0 },
+  { a: 0, v: 3.4 }, { a: -6, v: 2.0 }, { a: -12, v: 0.6 }, { a: -18, v: 0.2 },
+];
+// 高い太陽では Mie の暈を小さく（画面全面の白飛びを防ぐ）。ゴールデンアワー(4-12°)はグロウを残す
+const SKY_MIE = [
+  { a: 60, v: 0.0013 }, { a: 30, v: 0.0018 }, { a: 12, v: 0.003 }, { a: 4, v: 0.0035 },
+  { a: 0, v: 0.0025 }, { a: -6, v: 0.0015 }, { a: -12, v: 0.001 }, { a: -18, v: 0.0008 },
+];
+// 太陽光強度。昼に高くしすぎると砂などが Bloom 閾値を越えて霞むので控えめに
+const SUN_I = [{ a: 12, v: 2.3 }, { a: 0, v: 1.5 }];
+// 環境光（IBL）。薄明中（日の出前）は低く保ち、日の出後に地面が明るくなるようにする
+// （これがないと日の出前に空より先にフィールドが平坦に明るくなる）。夜は床を下げて暗く
+const ENV_I = [{ a: 30, v: 0.35 }, { a: 10, v: 0.3 }, { a: 2, v: 0.14 }, { a: -4, v: 0.05 }, { a: -14, v: 0.03 }];
+const HEMI_I = [{ a: 30, v: 0.35 }, { a: 2, v: 0.12 }, { a: -4, v: 0.05 }, { a: -14, v: 0.03 }];
+// 昼は澄んだ空気（遠景くっきり）、夜は濃くして遠くの山・湖を夜霧の闇に溶け込ませる
+const FOG_D = [{ a: 30, v: 0.0004 }, { a: 8, v: 0.0009 }, { a: 0, v: 0.0016 }, { a: -6, v: 0.0028 }, { a: -14, v: 0.0036 }];
+// 露出（目の順応）。昼は強く絞り、夜は開けて月・星が見えるように
+const EXPO = [
+  { a: 40, v: 0.34 }, { a: 20, v: 0.45 }, { a: 8, v: 0.62 }, { a: 2, v: 0.82 },
+  { a: -3, v: 0.98 }, { a: -8, v: 1.05 }, { a: -14, v: 1.12 },
+];
+const HEMI_SKY = [
+  { a: 30, rgb: [0.45, 0.62, 1.0] }, { a: 6, rgb: [0.79, 0.72, 0.85] },
+  { a: -6, rgb: [0.08, 0.11, 0.22] }, { a: -12, rgb: [0.05, 0.06, 0.14] },
+];
+const HEMI_GND = [
+  { a: 30, rgb: [0.3, 0.27, 0.2] }, { a: 6, rgb: [0.43, 0.37, 0.23] },
+  { a: -6, rgb: [0.04, 0.05, 0.09] },
+];
+
+// Sky アドオン（雲入りカスタム版）の太陽周りの過剰輝度を抑える。node_modules は編集せず
+// 実行時にフラグメント出力行を差し替える。硬い min クランプだと平らな「白いドーム＋
+// 緑の縁」が出るため、色相を保つ滑らかなロールオフ（ソフトショルダー）にする。
+const SKY_CLAMP = 2.6; // ロールオフの漸近上限
+const SKY_KNEE = 1.2; // これ以下は素通し、これ以上を滑らかに圧縮
+function clampSkyMaterial(m) {
+  if (m.userData.__clamped) return;
+  m.userData.__clamped = true;
+  m.fragmentShader = m.fragmentShader.replace(
+    'gl_FragColor = vec4( texColor, 1.0 );',
+    `{
+      float skyM = max(texColor.r, max(texColor.g, texColor.b));
+      if (skyM > ${SKY_KNEE.toFixed(2)}) {
+        float skyMc = ${SKY_KNEE.toFixed(2)} + (${SKY_CLAMP.toFixed(2)} - ${SKY_KNEE.toFixed(2)})
+          * (1.0 - exp(-(skyM - ${SKY_KNEE.toFixed(2)}) / (${SKY_CLAMP.toFixed(2)} - ${SKY_KNEE.toFixed(2)})));
+        texColor *= skyMc / skyM; // 色相を保ったまま最大チャンネルを圧縮
+      }
+    }
+    gl_FragColor = vec4( texColor, 1.0 );`
+  );
+  m.needsUpdate = true;
+}
+
+export function createSky(scene, renderer, sharedUniforms) {
+  patchFogChunks(); // fog マテリアルのコンパイル前に呼ぶ
+
   const sky = new Sky();
   sky.scale.setScalar(4000);
+  scene.add(sky);
 
-  const sun = new THREE.Vector3();
-  const elevation = 8; // 度（ゴールデンアワーの低い斜光）
-  const azimuth = 145;
-  const phi = THREE.MathUtils.degToRad(90 - elevation);
-  const theta = THREE.MathUtils.degToRad(azimuth);
-  sun.setFromSphericalCoords(1, phi, theta);
+  // 太陽周りの極端な輝度を上限でクランプ。これがないと光芒/フレア/Bloom が
+  // 超高輝度の太陽を拾って画面全体を白飛びさせる（太陽直視時）
+  clampSkyMaterial(sky.material);
 
-  // 空気遠近法のチャンクパッチ（地形・植生・水のマテリアル生成前に行う）
-  patchFogChunks(sun, new THREE.Color(0xffc587));
+  const sun = new THREE.Vector3(0, 0.2, -1).normalize();
+  const moonDir = new THREE.Vector3(0, -1, 0);
+  sky.material.uniforms.sunPosition.value.copy(sun);
+  sky.material.uniforms.mieDirectionalG.value = 0.82;
 
-  const u = sky.material.uniforms;
-  u.sunPosition.value.copy(sun);
-  // 低い太陽 + 高めの濁度で、地平線が橙〜琥珀に染まる夕方の空にする
-  u.turbidity.value = 9;
-  u.rayleigh.value = 2.6;
-  u.mieCoefficient.value = 0.0045; // 低い太陽では暈が巨大化するため控えめに
-  u.mieDirectionalG.value = 0.82;
+  // 動的フォグの共有 uniform（参照で全フォグマテリアルに配る）
+  const fogUniforms = {
+    uFogSunDir: { value: new THREE.Vector3(0, 1, 0) },
+    uFogSunColor: { value: new THREE.Color(0, 0, 0) },
+    uFogNight: { value: 0 },
+    uFogNightColor: { value: new THREE.Color(0.008, 0.016, 0.035) }, // 闇に近い暗い紺（遠景を溶かす）
+  };
+  scene.fog = new THREE.FogExp2(0xe2c8a8, 0.0014);
 
-  // 空を PMREM 化して PBR 材質の環境光（IBL）として使う。
-  // Sky は頂点シェーダで far 平面に張り付くので CubeCamera でもクリップされない
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  const envScene = new THREE.Scene();
-  envScene.add(sky);
-  const envRT = pmrem.fromScene(envScene);
-  pmrem.dispose();
-  scene.add(sky); // envScene.add で外れるので戻す
-  scene.environment = envRT.texture;
-  scene.environmentIntensity = 0.38; // 夕方の空は暗めなので少し持ち上げる
-
-  // 太陽光（シャドウはプレイヤー周辺だけに絞って解像度を確保する）
-  // ゴールデンアワーの暖色。環境光に対して強めにし、影のコントラストを立たせる
-  const sunLight = new THREE.DirectionalLight(0xffc587, 3.4);
+  // 太陽光
+  const sunLight = new THREE.DirectionalLight(0xffffff, 3.4);
   sunLight.castShadow = true;
   sunLight.shadow.mapSize.set(4096, 4096);
-  const SHADOW_RANGE = 110;
-  sunLight.shadow.camera.left = -SHADOW_RANGE;
-  sunLight.shadow.camera.right = SHADOW_RANGE;
-  sunLight.shadow.camera.top = SHADOW_RANGE;
-  sunLight.shadow.camera.bottom = -SHADOW_RANGE;
+  const SR = 110;
+  sunLight.shadow.camera.left = -SR;
+  sunLight.shadow.camera.right = SR;
+  sunLight.shadow.camera.top = SR;
+  sunLight.shadow.camera.bottom = -SR;
   sunLight.shadow.camera.near = 1;
   sunLight.shadow.camera.far = 400;
   sunLight.shadow.bias = -0.0006;
@@ -125,19 +230,112 @@ export function createSky(scene, renderer) {
   scene.add(sunLight);
   scene.add(sunLight.target);
 
-  // IBL が主のアンビエントになるのでヘミライトは控えめに
-  // （強すぎると影が淡くなり立体感が失われる）。夕方の空に合わせて暖色〜薄紫
+  // 月光（弱い青白。影は落とさない）
+  const moonLight = new THREE.DirectionalLight(0x000000, 0);
+  moonLight.color.setRGB(0.55, 0.66, 1.0, THREE.LinearSRGBColorSpace);
+  moonLight.castShadow = false;
+  scene.add(moonLight);
+  scene.add(moonLight.target);
+
+  // 環境光
   const hemiLight = new THREE.HemisphereLight(0xc9b8d8, 0x6e5e3a, 0.4);
   scene.add(hemiLight);
+  scene.environmentIntensity = 0.38;
 
-  // 空気遠近感の基準密度（色は空気遠近法シェーダが決めるため fogColor は未使用）
-  scene.fog = new THREE.FogExp2(0xe2c8a8, 0.0014);
+  // IBL（PMREM）。太陽が動くので間引いて再生成する。
+  // 専用 envScene が Sky のクローンを持ち、live な sky は本シーンから外さない（フリッカ防止）。
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const envScene = new THREE.Scene();
+  const envSky = new Sky();
+  envSky.scale.setScalar(4000);
+  clampSkyMaterial(envSky.material);
+  envScene.add(envSky);
+  const syncEnvSky = () => {
+    envSky.material.uniforms = sky.material.uniforms; // live uniforms を参照共有
+  };
+  syncEnvSky();
+  let envRT = pmrem.fromScene(envScene);
+  scene.environment = envRT.texture;
+  let aLastBake = 90;
+  let tLastBake = -1e9;
 
-  // プレイヤー追従でシャドウカメラを動かす
+  const _c = new THREE.Color();
+
+  // 太陽高度から各種をランプ更新する本体
+  function update(sunDir, mDir, moonAltDeg, illum) {
+    sun.copy(sunDir);
+    moonDir.copy(mDir);
+    const a = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(sunDir.y, -1, 1)));
+    const kAbove = kAboveHor(a);
+    const kNight = fall(a, 2, -6);
+
+    // Sky ドーム
+    const u = sky.material.uniforms;
+    u.sunPosition.value.copy(sunDir);
+    u.turbidity.value = rampScalar(SKY_TURB, a);
+    u.rayleigh.value = rampScalar(SKY_RAY, a);
+    u.mieCoefficient.value = rampScalar(SKY_MIE, a);
+
+    // 太陽光（色・強度）
+    sunLightColor(a, sunLight.color);
+    sunLight.intensity = rampScalar(SUN_I, a) * kAbove;
+    sunLight.visible = sunLight.intensity > 0.001;
+
+    // 月光
+    const iMoon = 0.3 * THREE.MathUtils.smoothstep(moonAltDeg, -4, 12) * (0.15 + 0.85 * illum) * kNight;
+    moonLight.intensity = iMoon;
+    moonLight.visible = iMoon > 0.002;
+
+    // 環境光
+    scene.environmentIntensity = rampScalar(ENV_I, a);
+    hemiLight.intensity = rampScalar(HEMI_I, a);
+    rampColor(HEMI_SKY, a, hemiLight.color);
+    rampColor(HEMI_GND, a, hemiLight.groundColor);
+
+    // フォグ
+    fogUniforms.uFogSunDir.value.copy(sunDir);
+    sunColorE(a, fogUniforms.uFogSunColor.value);
+    fogUniforms.uFogNight.value = nightFactor(a);
+    scene.fog.density = rampScalar(FOG_D, a);
+
+    // 共有 uniform（水・草・葉が参照する太陽）
+    sharedUniforms.uSunDir.value.copy(sunDir);
+    sunColorE(a, sharedUniforms.uSunColor.value);
+
+    // 露出の自動調整（昼は絞り、夜は開ける）
+    renderer.toneMappingExposure = rampScalar(EXPO, a);
+  }
+
+  // PMREM 間引き再生成（太陽が一定角度動いた / 一定時間経過 / フレームが重くない とき）
+  function refreshEnv(now, frameMs) {
+    if (now - tLastBake < 0.5) return;
+    // 重いフレームでは避ける（ヒッチ防止）が、長く未更新なら強行（低速環境でも追従）
+    if (frameMs > 40 && now - tLastBake < 3.0) return;
+    const a = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(sun.y, -1, 1)));
+    // 小さい角度ステップで再生成し、IBL の跳び（昼のちらつき）を抑える
+    if (Math.abs(a - aLastBake) < 0.5 && now - tLastBake < 2.0) return;
+    syncEnvSky();
+    const next = pmrem.fromScene(envScene);
+    const prev = envRT;
+    envRT = next;
+    scene.environment = envRT.texture;
+    if (prev) prev.dispose();
+    aLastBake = a;
+    tLastBake = now;
+  }
+
+  // プレイヤー追従で太陽光・月光のシャドウ/向きを動かす
   function followPlayer(playerPos) {
     sunLight.position.copy(playerPos).addScaledVector(sun, 180);
     sunLight.target.position.copy(playerPos);
+    moonLight.position.copy(playerPos).addScaledVector(moonDir, 180);
+    moonLight.target.position.copy(playerPos);
   }
 
-  return { sunDirection: sun, followPlayer };
+  function disposeSky() {
+    pmrem.dispose();
+    if (envRT) envRT.dispose();
+  }
+
+  return { sky, sunDirection: sun, fogUniforms, followPlayer, update, refreshEnv, disposeSky };
 }

@@ -8,11 +8,23 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
 import { createTerrain, terrainHeight, forestDensity } from './terrain.js';
 import { createWater } from './water.js';
-import { createSky } from './sky.js';
+import { createSky, applyDynamicFog } from './sky.js';
 import { createVegetation } from './vegetation.js';
 import { createGrassField } from './grass.js';
 import { createAmbience } from './ambience.js';
 import { createPlayer } from './player.js';
+import { createSimClock } from './clock.js';
+import { createMoon } from './moon.js';
+import { createSun } from './sun.js';
+import { createStarField } from './stars.js';
+import { createSettingsPanel } from './ui/settings.js';
+import {
+  sunHorizontal,
+  moonHorizontal,
+  moonPhase,
+  localSiderealTimeDeg,
+  altAzToVector,
+} from './celestial.js';
 
 const app = document.getElementById('app');
 const overlay = document.getElementById('overlay');
@@ -42,21 +54,47 @@ const sharedUniforms = {
   uPlayerPos: { value: new THREE.Vector2() }, // 草の踏み分け用（ワールド xz）
 };
 
-const { sunDirection, followPlayer } = createSky(scene, renderer);
-sharedUniforms.uSunDir.value.copy(sunDirection);
+// シミュレーション時計（緯度経度・日時・速度倍率の単一状態源）。東京・144倍を既定に。
+const simClock = createSimClock({ latitude: 35.6812, longitude: 139.7671, speedMultiplier: 144 });
+
+const { sunDirection, fogUniforms, followPlayer, update: skyUpdate, refreshEnv } = createSky(
+  scene,
+  renderer,
+  sharedUniforms
+);
+console.assert(scene.fog instanceof THREE.FogExp2, 'celestial fog requires FogExp2');
+
 scene.add(createTerrain());
 const water = createWater(sunDirection, sharedUniforms);
 scene.add(water);
 scene.add(createVegetation(sharedUniforms));
-const grass = createGrassField(sharedUniforms);
+const grass = createGrassField(sharedUniforms, fogUniforms);
 scene.add(grass.group);
 const ambience = createAmbience();
 scene.add(ambience.group);
+
+// 天体（layer 0 で水面反射にも映る）
+const moon = createMoon(scene);
+const sun = createSun(scene);
+const stars = createStarField({
+  latitudeDeg: simClock.state.latitude,
+  pixelRatio: renderer.getPixelRatio(),
+});
+scene.add(stars.group);
+
+// 動的フォグの安全パス: シーン上の全フォグマテリアルへ共有 uniform を注入
+scene.traverse((o) => {
+  const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+  for (const m of mats) applyDynamicFog(m, fogUniforms);
+});
 
 const player = createPlayer(camera, renderer.domElement);
 scene.add(player.controls.object);
 // 湖が見える丘の上からスタート
 player.spawn(-20, 120, { x: -150, z: 120 });
+
+const settings = createSettingsPanel({ clock: simClock, controls: player.controls, overlay });
+const _moonDir = new THREE.Vector3();
 
 // ポストプロセス: ブルームで太陽の照り返し・空気感を出す
 // MSAA 付きレンダーターゲットでエッジのギザつきを防ぐ
@@ -101,7 +139,9 @@ gtaoPass.render = function (...args) {
 };
 composer.addPass(gtaoPass);
 
-const bloomPass = new UnrealBloomPass(new THREE.Vector2(size.width, size.height), 0.25, 0.7, 0.85);
+// radius を小さくして細かいミップ主体の Bloom にする。太陽など小さく明るい光源で
+// 粗いミップが「四角く」広がるアーティファクトを防ぎ、月・星の滲みも締まる
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(size.width, size.height), 0.25, 0.15, 0.85);
 composer.addPass(bloomPass);
 
 // スクリーンスペース光芒（サンシャフト）。太陽のスクリーン座標へ向かう
@@ -151,7 +191,7 @@ composer.addPass(shaftPass);
 const bokehPass = new BokehPass(scene, camera, {
   focus: 30.0,
   aperture: 0.00004,
-  maxblur: 0.0045,
+  maxblur: 0.0018, // 遠方（月・星・山）がぼけすぎないよう控えめに
 });
 composer.addPass(bokehPass);
 
@@ -271,7 +311,20 @@ composer.addPass(gradePass);
 
 overlay.addEventListener('click', () => player.controls.lock());
 player.controls.addEventListener('lock', () => overlay.classList.add('hidden'));
-player.controls.addEventListener('unlock', () => overlay.classList.remove('hidden'));
+player.controls.addEventListener('unlock', () => {
+  if (!settings.isOpen()) overlay.classList.remove('hidden');
+});
+
+// 設定パネルの開閉（O）。入力欄でのタイプ中は無視。Esc で閉じる
+window.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) {
+    if (e.code === 'Escape') settings.close();
+    return;
+  }
+  if (e.code === 'KeyO') settings.toggle();
+  else if (e.code === 'Escape' && settings.isOpen()) settings.close();
+});
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -291,45 +344,93 @@ function updateLightShafts() {
   camera.getWorldDirection(camForward);
   const facing = camForward.dot(sunDirection);
   let strength = 0;
-  if (facing > 0.1) {
+  if (facing > 0.1 && sunDirection.y > 0.0) {
     sunWorld.copy(camera.position).addScaledVector(sunDirection, 1000).project(camera);
     shaftPass.uniforms.uSunScreen.value.set(sunWorld.x * 0.5 + 0.5, sunWorld.y * 0.5 + 0.5);
     // 画面端から外れるほど弱める
     const offX = Math.max(0, Math.abs(sunWorld.x) - 1);
     const offY = Math.max(0, Math.abs(sunWorld.y) - 1);
     const off = Math.min(1, Math.hypot(offX, offY) / 0.6);
-    strength = (1 - off) * 0.22;
+    strength = (1 - off) * 0.09; // 太陽直視で画面全体が白飛びしないよう控えめに
   }
   shaftPass.uniforms.uStrength.value = strength;
   // レンズフレアは光芒と同じ太陽座標・強度を共有（強度スケールのみ別）
   flarePass.uniforms.uSunScreen.value.copy(shaftPass.uniforms.uSunScreen.value);
-  flarePass.uniforms.uStrength.value = strength * 2.6;
+  flarePass.uniforms.uStrength.value = strength * 1.6;
   flarePass.uniforms.uAspect.value = camera.aspect;
+}
+
+const DEG = 180 / Math.PI;
+const fmtLocal = (date, lon) => {
+  const d = new Date(date.getTime() + (lon / 15) * 3600 * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+};
+function updateHud(sunAltDeg, moonAltDeg, illum) {
+  const s = simClock.state;
+  const p = camera.position;
+  hud.innerHTML =
+    `📅 ${fmtLocal(s.simDate, s.longitude)} (現地)　⏩ ${simClock.speedLabel()}${s.paused ? ' ⏸' : ''}<br>` +
+    `📍 ${s.latitude.toFixed(2)}°, ${s.longitude.toFixed(2)}°<br>` +
+    `☀ ${sunAltDeg.toFixed(0)}°　🌙 ${moonAltDeg.toFixed(0)}° (${Math.round(illum * 100)}%)<br>` +
+    `x: ${p.x.toFixed(0)}  z: ${p.z.toFixed(0)}　[O] 設定`;
 }
 
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
   const time = clock.elapsedTime;
+  const frameMs = dt * 1000;
 
+  // --- 天文（単一の時計・単一の恒星時で太陽/月/星を計算）---
+  simClock.advance(dt);
+  const { simDate, latitude, longitude } = simClock.state;
+  const sh = sunHorizontal(simDate, latitude, longitude);
+  const mh = moonHorizontal(simDate, latitude, longitude);
+  const ph = moonPhase(simDate);
+  const lstDeg = localSiderealTimeDeg(simDate, longitude, sh.meanLon);
+  altAzToVector(sh.altitude, sh.azimuth, sunDirection);
+  const moonDir = altAzToVector(mh.altitude, mh.azimuth, _moonDir);
+  const moonAltDeg = mh.altitude * DEG;
+  const sunAltDeg = sh.altitude * DEG;
+
+  // --- 空・ライト・フォグ・共有 uniform（水 RT より前に確定させる）---
+  skyUpdate(sunDirection, moonDir, moonAltDeg, ph.illuminatedFraction);
+  followPlayer(camera.position);
+  // Bloom はトーンマップ前の生 HDR に作用する。日中は閾値を高くして空も太陽スプライトも
+  // ブルームさせない（太陽の白いドーム／四角アーティファクトを根本回避。太陽の輝きは
+  // スプライトの高輝度＋AgX で表現）。夜は閾値を下げて月・星を淡く光らせる
+  bloomPass.threshold = 0.85 + THREE.MathUtils.smoothstep(sunDirection.y, -0.02, 0.06) * 40.0;
+  // 夜は Bloom を弱めて月・星をシャープに保つ。太陽が地平線を越えたら通常のグロウに戻す
+  bloomPass.strength = 0.1 + THREE.MathUtils.smoothstep(sunDirection.y, -0.03, 0.06) * 0.18;
+
+  // --- 天体は水 RT より前に更新（反射が当該フレームの位置を捉える）---
+  moon.update(camera, sunDirection, moonDir, ph.illuminatedFraction);
+  sun.update(camera, sunDirection, sunAltDeg);
+  stars.group.position.copy(camera.position);
+  stars.update(latitude, lstDeg, sunDirection.y, time);
+
+  // --- 共有 uniform を最新化 → 水 RT パスが正しい太陽/月/星を描く ---
   sharedUniforms.uTime.value = time;
   sharedUniforms.uPlayerPos.value.set(camera.position.x, camera.position.z);
   gradePass.uniforms.uTime.value = time;
   water.userData.update(time);
+
   if (!window.__demo?.freeze) player.update(dt);
   grass.update(camera.position);
   ambience.update(dt, time, camera.position);
-  followPlayer(camera.position);
+
+  refreshEnv(time, frameMs); // 間引き PMREM（composer.render より前）
   updateLightShafts();
 
   hudTimer += dt;
   if (hudTimer > 0.25) {
     hudTimer = 0;
-    const p = camera.position;
-    hud.textContent = `x: ${p.x.toFixed(0)}  z: ${p.z.toFixed(0)}`;
+    updateHud(sh.altitude * DEG, moonAltDeg, ph.illuminatedFraction);
+    settings.refresh();
   }
 
   composer.render();
 });
 
 // 動作検証用の内部フック
-window.__demo = { camera, scene, renderer, player, terrainHeight, forestDensity };
+window.__demo = { camera, scene, renderer, player, terrainHeight, forestDensity, simClock, bokehPass, bloomPass, composer, shaftPass, flarePass };

@@ -41,6 +41,13 @@ function createCloudMaterial(texture) {
       void main() {
         vec4 tex = texture2D(uMap, gl_PointCoord);
         gl_FragColor = vec4(vColor * tex.rgb, tex.a * vOpacity);
+        // 雲は太陽光で照らされない固定色。日没後はすばやく暗転させ、薄明で白い塊が
+        // 浮かないようにする（uFogNight は -8° で最大なので、その前半で暗くする）
+        #ifdef USE_FOG
+          float cloudDim = smoothstep(0.0, 0.45, uFogNight);
+          gl_FragColor.rgb *= mix(1.0, 0.04, cloudDim);
+          gl_FragColor.a *= mix(1.0, 0.18, cloudDim);
+        #endif
         #include <fog_fragment>
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
@@ -177,14 +184,22 @@ function createButterflies() {
   const wingGeometry = new THREE.PlaneGeometry(0.22, 0.3);
   wingGeometry.translate(0.11, 0, 0);
   const palette = [0xffffff, 0xffd966, 0xe69ad8, 0x9ad8e6];
-  const materials = palette.map(
-    (c) => new THREE.MeshBasicMaterial({
+  const materials = palette.map((c) => {
+    const m = new THREE.MeshBasicMaterial({
       color: c,
       side: THREE.DoubleSide,
       map: butterflyWingTexture(),
       alphaTest: 0.5, // 翅のシルエットで輪郭を抜く（羽ばたき中の「白い板」を防ぐ）
-    })
-  );
+    });
+    // 蝶は無灯（MeshBasic）で夜も光ってしまうため、日没後は減光して溶け込ませる
+    m.onBeforeCompile = (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <fog_fragment>',
+        '#ifdef USE_FOG\n  gl_FragColor.rgb *= mix(1.0, 0.03, smoothstep(0.0, 0.4, uFogNight));\n#endif\n#include <fog_fragment>'
+      );
+    };
+    return m;
+  });
 
   const butterflies = [];
   for (let i = 0; i < 22; i++) {
