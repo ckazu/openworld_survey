@@ -447,7 +447,7 @@ renderer.setAnimationLoop(() => {
   moon.update(camera, sunDirection, moonDir, ph.illuminatedFraction);
   sun.update(camera, sunDirection, sunAltDeg);
   stars.group.position.copy(camera.position);
-  stars.update(latitude, lstDeg, sunDirection.y, time);
+  stars.update(latitude, lstDeg, sunDirection.y, time, wc.cloudiness);
 
   // --- 共有 uniform を最新化 → 水 RT パスが正しい太陽/月/星を描く ---
   sharedUniforms.uTime.value = time;

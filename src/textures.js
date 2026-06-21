@@ -330,16 +330,17 @@ export function rainStreakTexture() {
   const canvas = makeCanvas(size);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, size, size);
-  // 縦方向グラデ（端は透明・中央やや上が最も濃い）
+  // 縦方向グラデ。中央が濃く、端へ細く尾を引く（モーションブラーの雨筋）
   const grad = ctx.createLinearGradient(0, 0, 0, size);
   grad.addColorStop(0.0, 'rgba(255,255,255,0)');
-  grad.addColorStop(0.35, 'rgba(255,255,255,0.85)');
-  grad.addColorStop(0.7, 'rgba(255,255,255,0.95)');
+  grad.addColorStop(0.18, 'rgba(255,255,255,0.55)');
+  grad.addColorStop(0.5, 'rgba(255,255,255,0.95)');
+  grad.addColorStop(0.82, 'rgba(255,255,255,0.55)');
   grad.addColorStop(1.0, 'rgba(255,255,255,0)');
   ctx.fillStyle = grad;
-  // 細い縦帯（横方向はソフトに）。中央 1/6 幅
-  const w = size * 0.16;
-  ctx.filter = 'blur(1.5px)';
+  // 細い縦帯（横方向はソフトに）。中央 ~8% 幅で細い筋に
+  const w = size * 0.09;
+  ctx.filter = 'blur(1.2px)';
   ctx.fillRect(size * 0.5 - w / 2, 0, w, size);
   ctx.filter = 'none';
   _rainStreak = new THREE.CanvasTexture(canvas);

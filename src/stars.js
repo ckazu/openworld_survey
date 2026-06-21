@@ -170,10 +170,11 @@ export function createStarField({ latitudeDeg = 35.68, pixelRatio = 1 } = {}) {
   milkyWay.frustumCulled = false;
   spinGroup.add(milkyWay);
 
-  function update(latDeg, lstDeg, sunDirY, time) {
+  function update(latDeg, lstDeg, sunDirY, time, cloudiness = 0) {
     group.rotation.x = -(Math.PI / 2 - latDeg * DEG); // 天の極を緯度の高さへ
     spinGroup.rotation.y = -lstDeg * DEG; // 恒星時で回転
-    const fade = fall(sunDirY, Math.sin(-2 * DEG), Math.sin(-12 * DEG)); // 薄明で消える
+    // 薄明で消える。さらに曇天では雲に隠れて見えなくなる
+    const fade = fall(sunDirY, Math.sin(-2 * DEG), Math.sin(-12 * DEG)) * (1 - cloudiness * 0.92);
     starMat.uniforms.uNightFade.value = fade;
     mwMat.uniforms.uNightFade.value = fade;
     starMat.uniforms.uTime.value = time;

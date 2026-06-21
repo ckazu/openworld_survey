@@ -86,14 +86,15 @@ void main() {
   }
   float kind = uPrecipKind;
   vKind = kind;
-  float fall = mix(20.0, 2.4, kind); // 雨=速い, 雪=遅い
+  float sizeVar = 0.5 + 1.0 * fract(aSeed.z * 13.7 + aSeed.w * 5.3); // 粒ごとの大きさのばらつき
+  float fall = mix(24.0, 2.2, kind); // 雨=速い, 雪=遅い
   vec3 lp;
   lp.x = (aSeed.x - 0.5) * uBoxSize;
   lp.z = (aSeed.y - 0.5) * uBoxSize;
-  lp.y = uBoxHeight * 0.5 - mod(aSeed.z * uBoxHeight + uTime * fall, uBoxHeight);
+  lp.y = uBoxHeight * 0.5 - mod(aSeed.z * uBoxHeight + uTime * fall * (0.8 + 0.4 * sizeVar), uBoxHeight);
   float prog = (uBoxHeight * 0.5 - lp.y) / uBoxHeight; // 上=0 下=1
-  vec2 drift = uWindDir * uWindGust * mix(6.0, 3.0, kind) * prog;       // 風シア（斜め降り）
-  drift += vec2(sin(uTime * 1.3 + aSeed.z * 6.28), cos(uTime * 1.1 + aSeed.z * 5.0)) * (1.6 * kind); // 雪の横揺れ
+  vec2 drift = uWindDir * uWindGust * mix(7.0, 3.0, kind) * prog;       // 風シア（斜め降り）
+  drift += vec2(sin(uTime * 1.3 + aSeed.z * 6.28), cos(uTime * 1.1 + aSeed.z * 5.0)) * (1.8 * kind); // 雪の横揺れ
   lp.xz += drift;
   lp.x = mod(lp.x + uBoxSize * 0.5, uBoxSize) - uBoxSize * 0.5;
   lp.z = mod(lp.z + uBoxSize * 0.5, uBoxSize) - uBoxSize * 0.5;
@@ -101,11 +102,13 @@ void main() {
   vec4 worldPos = modelMatrix * vec4(lp, 1.0);
   vec4 mvPosition = viewMatrix * worldPos;
   gl_Position = projectionMatrix * mvPosition;
-  // 近距離で発散しないよう遠近を緩め、最小/最大をクランプ（雨=細い筋, 雪=小さい丸粒）
-  float baseSize = mix(7.0, 9.0, kind);
-  gl_PointSize = clamp(baseSize * (120.0 / max(-mvPosition.z, 1.0)),
-                       mix(1.5, 3.0, kind), mix(22.0, 30.0, kind));
-  vAlpha = clamp((uPrecip - aSeed.w) * 6.0, 0.0, 1.0) * mix(0.5, 0.85, kind);
+  // 雨は縦長の細い筋、雪は小さい丸粒。近距離で発散しないようクランプ
+  float persp = 200.0 / max(-mvPosition.z, 1.0);
+  float rainSize = clamp(8.5 * persp, 3.0, 42.0);
+  float snowSize = clamp((3.0 + 6.0 * sizeVar) * persp, 1.5, 20.0);
+  gl_PointSize = mix(rainSize, snowSize, kind);
+  // 雨は薄く（半透明の筋）、雪はやや濃く。粒ごとの濃淡も付ける
+  vAlpha = clamp((uPrecip - aSeed.w) * 6.0, 0.0, 1.0) * mix(0.3, 0.8, kind) * (0.6 + 0.4 * sizeVar);
   #ifdef USE_FOG
     vFogDepth = -mvPosition.z;
     vFogWorldPos = worldPos.xyz;
@@ -117,17 +120,18 @@ const PRECIP_FRAG = /* glsl */ `
 #include <common>
 #include <fog_pars_fragment>
 uniform sampler2D uRainTex, uSnowTex;
+uniform float uDaylight; // 0=夜 1=昼。雨雪は周囲光で見えるので夜はほぼ不可視
 varying float vAlpha;
 varying float vKind;
 void main() {
   vec4 tex = mix(texture2D(uRainTex, gl_PointCoord), texture2D(uSnowTex, gl_PointCoord), vKind);
-  vec3 col = mix(vec3(0.72, 0.78, 0.85), vec3(0.95, 0.96, 1.0), vKind); // 雨=青灰, 雪=白
+  vec3 col = mix(vec3(0.70, 0.76, 0.84), vec3(0.92, 0.94, 1.0), vKind); // 雨=青灰, 雪=白
   float a = tex.a * vAlpha;
-  if (a < 0.01) discard;
+  // 明るさを昼夜に連動。夜は光源がないのでほぼ見えない（くっきり残るのを防ぐ）
+  float lightLevel = 0.05 + 0.95 * uDaylight;
+  a *= lightLevel;
+  if (a < 0.008) discard;
   gl_FragColor = vec4(col, a);
-  #ifdef USE_FOG
-    gl_FragColor.rgb *= mix(1.0, 0.25, uFogNight); // 夜は減光
-  #endif
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -162,6 +166,7 @@ function createPrecip(weatherUniforms, fogUniforms, rand) {
   uniforms.uPrecipKind = weatherUniforms.uPrecipKind;
   uniforms.uWindGust = weatherUniforms.uWindGust;
   uniforms.uWindDir = weatherUniforms.uWindDir;
+  uniforms.uDaylight = weatherUniforms.uDaylight;
   if (fogUniforms) {
     uniforms.uFogSunDir = fogUniforms.uFogSunDir;
     uniforms.uFogSunColor = fogUniforms.uFogSunColor;
