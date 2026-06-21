@@ -535,6 +535,10 @@ void main() {
   transmitted = mix(transmitted, bottomCol * shallowSand + uWaterBodyColor * 0.05, sandMix * 0.6);
 
   // ---- (8) 誘電体ベース ----
+  // 夜は水中の散乱光が乏しい。暗い「夜の水色」へブレンドし、浅瀬が黒く落ち込んで
+  // 不自然なローブにならないよう一様な暗い青にする（反射の月・星は残る）
+  vec3 nightWater = vec3(0.015, 0.028, 0.05);
+  transmitted = mix(transmitted, nightWater, uFogNight * 0.82);
   vec3 col = mix(transmitted, reflCol, F);
 
   // ---- (9) 太陽スペキュラ + きらめき（HDR → Bloom）----
@@ -569,7 +573,7 @@ void main() {
   float crestFoam = smoothstep(uFoamStart, 1.0, crestN) * foamN * 0.25;
   float rim = 1.0 - smoothstep(0.04, 0.35, colDepth);
   float foam = clamp(max(crestFoam, rim * 0.8 * foamN), 0.0, 1.0);
-  col = mix(col, uFoamColor, foam);
+  col = mix(col, uFoamColor * mix(1.0, 0.16, uFogNight), foam); // 夜は泡を大きく暗く
 
   // ---- (12) 安全（有限・非負。上限はクランプしない=HDR を Bloom へ）----
   col = max(col, vec3(0.0));
@@ -753,9 +757,12 @@ function createShoreFoam(shoreTex) {
         float front = sin(depth * 5.0 - uTime * 0.7 + fnoise(vWorld * 0.35) * 2.2) * 0.5 + 0.5;
         float wave = smoothstep(0.88, 0.99, front) * shallow;
         float sparkle = 0.45 + 0.55 * fnoise(vWorld * 6.0 + uTime * 0.4);
-        float a = clamp(edge * 0.7 + wave * 0.35, 0.0, 1.0) * sparkle;
+        // 夜は広い波頭の帯（灰色ローブ）を消し、水際の細い縁だけ淡く残す
+        float waveK = mix(1.0, 0.0, uFogNight);
+        float a = clamp(edge * 0.7 + wave * 0.35 * waveK, 0.0, 1.0) * sparkle;
         if (a < 0.01) discard;
-        gl_FragColor = vec4(vec3(0.93, 0.96, 0.97), a * 0.6);
+        float nf = mix(1.0, 0.18, uFogNight);
+        gl_FragColor = vec4(vec3(0.93, 0.96, 0.97) * nf, a * 0.6 * mix(1.0, 0.4, uFogNight));
         #include <fog_fragment>
       }`,
     transparent: true,

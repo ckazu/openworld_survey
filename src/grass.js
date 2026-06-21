@@ -85,7 +85,7 @@ function createClumpGeometry(seed) {
   return BufferGeometryUtils.mergeGeometries(blades);
 }
 
-function createGrassMaterial(uniforms) {
+function createGrassMaterial(uniforms, fogUniforms) {
   // Phong で弱い艶を持たせ、風で揺れたとき穂が鈍く光る
   const material = new THREE.MeshPhongMaterial({
     color: 0xffffff,
@@ -103,6 +103,13 @@ function createGrassMaterial(uniforms) {
     shader.uniforms.uSunDir = uniforms.uSunDir;
     shader.uniforms.uSunColor = uniforms.uSunColor;
     shader.uniforms.uPlayerPos = uniforms.uPlayerPos;
+    // 動的フォグ（太陽が動くため定数→共有 uniform を参照で受ける）
+    if (fogUniforms) {
+      shader.uniforms.uFogSunDir = fogUniforms.uFogSunDir;
+      shader.uniforms.uFogSunColor = fogUniforms.uFogSunColor;
+      shader.uniforms.uFogNight = fogUniforms.uFogNight;
+      shader.uniforms.uFogNightColor = fogUniforms.uFogNightColor;
+    }
 
     // 風。インスタンス変換後のワールド座標で曲げることで、
     // ブレードの向きに依存しない「草原を渡る風のうねり」を作る。
@@ -153,12 +160,12 @@ function createGrassMaterial(uniforms) {
   return material;
 }
 
-export function createGrassField(uniforms) {
+export function createGrassField(uniforms, fogUniforms) {
   const group = new THREE.Group();
   group.name = 'grass';
   // 株ジオメトリ 3 変種（シードを変えて構成を変える）
   const geometries = [101, 202, 303].map(createClumpGeometry);
-  const material = createGrassMaterial(uniforms);
+  const material = createGrassMaterial(uniforms, fogUniforms);
 
   const tiles = new Map(); // "ix,iz" -> { meshes: InstancedMesh[], lod: 0 | 1 }
   const buildQueue = [];
