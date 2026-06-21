@@ -92,10 +92,14 @@ const stars = createStarField({
 });
 scene.add(stars.group);
 
-// 動的フォグの安全パス: シーン上の全フォグマテリアルへ共有 uniform を注入
+// 動的フォグの安全パス: シーン上の全フォグマテリアルへ共有 uniform を注入。
+// あわせて天候の濡れ（地面・岩・幹の暗化＋艶）も冪等注入する
 scene.traverse((o) => {
   const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
-  for (const m of mats) applyDynamicFog(m, fogUniforms);
+  for (const m of mats) {
+    applyDynamicFog(m, fogUniforms);
+    weather.applyWetness(m);
+  }
 });
 
 const player = createPlayer(camera, renderer.domElement);

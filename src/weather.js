@@ -101,10 +101,10 @@ void main() {
   vec4 worldPos = modelMatrix * vec4(lp, 1.0);
   vec4 mvPosition = viewMatrix * worldPos;
   gl_Position = projectionMatrix * mvPosition;
-  // 近距離で発散しないよう遠近を緩め、最小/最大をクランプ（雨=細い筋, 雪=丸い粒）
-  float baseSize = mix(7.0, 13.0, kind);
-  gl_PointSize = clamp(baseSize * (140.0 / max(-mvPosition.z, 1.0)),
-                       mix(1.5, 4.0, kind), mix(24.0, 60.0, kind));
+  // 近距離で発散しないよう遠近を緩め、最小/最大をクランプ（雨=細い筋, 雪=小さい丸粒）
+  float baseSize = mix(7.0, 9.0, kind);
+  gl_PointSize = clamp(baseSize * (120.0 / max(-mvPosition.z, 1.0)),
+                       mix(1.5, 3.0, kind), mix(22.0, 30.0, kind));
   vAlpha = clamp((uPrecip - aSeed.w) * 6.0, 0.0, 1.0) * mix(0.5, 0.85, kind);
   #ifdef USE_FOG
     vFogDepth = -mvPosition.z;

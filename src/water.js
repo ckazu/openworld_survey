@@ -421,6 +421,7 @@ uniform float uCausticScale, uCausticSpeed, uCausticStrength, uCausticChroma, uC
 uniform float uSheenPower, uSheenStrength, uGlintPower, uGlintGate, uGlintStrength;
 uniform vec3 uScatterColor; uniform float uScatterStrength, uScatterPower, uScatterDistort;
 uniform float uFoamStart; uniform vec3 uFoamColor;
+uniform float uRainRipple; // 天候: 雨量（水面の波紋）
 
 varying vec3 vWorldPos;
 varying vec3 vNormalGeom;
@@ -479,6 +480,27 @@ void main() {
   float detStr = uNormalStrength * smoothstep(0.05, 0.8, depthWater);
   vec3 nDetail = normalize(vec3(-s.x * detStr, 1.0, -s.y * detStr));
   N = rnmBlend(N, nDetail);
+
+  // ---- 雨の波紋（セルごとに広がる同心円。深水域のみ）----
+  float rain = uRainRipple * shoreFade;
+  if (rain > 0.01) {
+    vec2 g = P * 0.8;            // セル ≈ 1.25m
+    vec3 acc = vec3(0.0);
+    for (int oy = -1; oy <= 1; oy++) {
+      for (int ox = -1; ox <= 1; ox++) {
+        vec2 id = floor(g) + vec2(float(ox), float(oy));
+        float ph = cNoise(id + 0.13) * 6.2831;
+        vec2 c = id + 0.5 + 0.34 * (vec2(cNoise(id + 0.7), cNoise(id + 3.1)) - 0.5);
+        // 各波紋は周期的に発生（位相をずらして散発的に）
+        float life = fract(uTime * 0.7 + cNoise(id) );
+        vec2 dv = g - c;
+        float d = length(dv);
+        float ring = sin(d * 26.0 - life * 36.0 + ph) * exp(-d * 4.0) * (1.0 - life);
+        acc += vec3(dv.x, 0.0, dv.y) / max(d, 1e-3) * ring;
+      }
+    }
+    N = normalize(N + acc * rain * 0.32);
+  }
 
   // ---- (2) 距離フラット化（ちらつき防止）+ mip フェード ----
   float nFlat = smoothstep(uFlatNear, uFlatFar, dist);
