@@ -77,6 +77,7 @@ uniform float uTime, uPrecip, uPrecipKind, uWindGust, uBoxSize, uBoxHeight;
 uniform vec2 uWindDir;
 varying float vAlpha;
 varying float vKind;
+varying float vAngle; // 風で傾いた筋のスクリーン上の角度
 void main() {
   // 量に応じて点を間引く（rank が量を超える点は描画スキップ）
   if (aSeed.w > uPrecip + 0.001) {
@@ -88,12 +89,15 @@ void main() {
   vKind = kind;
   float sizeVar = 0.5 + 1.0 * fract(aSeed.z * 13.7 + aSeed.w * 5.3); // 粒ごとの大きさのばらつき
   float fall = mix(24.0, 2.2, kind); // 雨=速い, 雪=遅い
+  // 水平風速（雨は風に流されやすい）。軌道の傾きと筋の傾きを一致させる。
+  // 落下速度の 1.3 倍で頭打ち（雪は落下が遅いので横滑りが過大にならないよう抑える）
+  float windSpeed = min(uWindGust * mix(11.0, 5.0, kind), fall * 1.3);
   vec3 lp;
   lp.x = (aSeed.x - 0.5) * uBoxSize;
   lp.z = (aSeed.y - 0.5) * uBoxSize;
   lp.y = uBoxHeight * 0.5 - mod(aSeed.z * uBoxHeight + uTime * fall * (0.8 + 0.4 * sizeVar), uBoxHeight);
   float prog = (uBoxHeight * 0.5 - lp.y) / uBoxHeight; // 上=0 下=1
-  vec2 drift = uWindDir * uWindGust * mix(7.0, 3.0, kind) * prog;       // 風シア（斜め降り）
+  vec2 drift = uWindDir * (windSpeed / fall) * (prog * uBoxHeight);     // 風で斜めに流れる軌道
   drift += vec2(sin(uTime * 1.3 + aSeed.z * 6.28), cos(uTime * 1.1 + aSeed.z * 5.0)) * (1.8 * kind); // 雪の横揺れ
   lp.xz += drift;
   lp.x = mod(lp.x + uBoxSize * 0.5, uBoxSize) - uBoxSize * 0.5;
@@ -101,6 +105,9 @@ void main() {
 
   vec4 worldPos = modelMatrix * vec4(lp, 1.0);
   vec4 mvPosition = viewMatrix * worldPos;
+  // 落下速度ベクトル（風込み）をビュー空間へ → スクリーン上の傾き角を求める
+  vec3 velView = (viewMatrix * vec4(uWindDir.x * windSpeed, -fall, uWindDir.y * windSpeed, 0.0)).xyz;
+  vAngle = atan(velView.x, -velView.y);
   gl_Position = projectionMatrix * mvPosition;
   // 雨は縦長の細い筋、雪は小さい丸粒。近距離で発散しないようクランプ
   float persp = 200.0 / max(-mvPosition.z, 1.0);
@@ -123,8 +130,13 @@ uniform sampler2D uRainTex, uSnowTex;
 uniform float uDaylight; // 0=夜 1=昼。雨雪は周囲光で見えるので夜はほぼ不可視
 varying float vAlpha;
 varying float vKind;
+varying float vAngle;
 void main() {
-  vec4 tex = mix(texture2D(uRainTex, gl_PointCoord), texture2D(uSnowTex, gl_PointCoord), vKind);
+  // 雨筋を風向き（vAngle）に合わせて回転（点スプライト内で UV を回す）
+  vec2 pc = gl_PointCoord - 0.5;
+  float ca = cos(vAngle), sa = sin(vAngle);
+  vec2 rainUV = vec2(pc.x * ca - pc.y * sa, pc.x * sa + pc.y * ca) + 0.5;
+  vec4 tex = mix(texture2D(uRainTex, rainUV), texture2D(uSnowTex, gl_PointCoord), vKind);
   vec3 col = mix(vec3(0.70, 0.76, 0.84), vec3(0.92, 0.94, 1.0), vKind); // 雨=青灰, 雪=白
   float a = tex.a * vAlpha;
   // 明るさを昼夜に連動。夜は光源がないのでほぼ見えない（くっきり残るのを防ぐ）
