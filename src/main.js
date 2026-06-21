@@ -444,8 +444,8 @@ renderer.setAnimationLoop(() => {
   bloomPass.strength = (0.1 + THREE.MathUtils.smoothstep(sunDirection.y, -0.03, 0.06) * 0.18) * (1 - 0.5 * wc.cloudiness);
 
   // --- 天体は水 RT より前に更新（反射が当該フレームの位置を捉える）---
-  moon.update(camera, sunDirection, moonDir, ph.illuminatedFraction);
-  sun.update(camera, sunDirection, sunAltDeg);
+  moon.update(camera, sunDirection, moonDir, ph.illuminatedFraction, wc.cloudiness);
+  sun.update(camera, sunDirection, sunAltDeg, wc.cloudiness);
   stars.group.position.copy(camera.position);
   stars.update(latitude, lstDeg, sunDirection.y, time, wc.cloudiness);
 
