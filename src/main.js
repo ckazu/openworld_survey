@@ -17,6 +17,7 @@ import { createSimClock } from './clock.js';
 import { createMoon } from './moon.js';
 import { createSun } from './sun.js';
 import { createStarField } from './stars.js';
+import { createWeather } from './weather.js';
 import { createSettingsPanel } from './ui/settings.js';
 import {
   sunHorizontal,
@@ -64,14 +65,23 @@ const { sunDirection, fogUniforms, followPlayer, update: skyUpdate, refreshEnv }
 );
 console.assert(scene.fog instanceof THREE.FogExp2, 'celestial fog requires FogExp2');
 
+// 天候（昼夜ランプを変調する連続パラメータ。共有 uniform を各所へ参照配布する）
+const weather = createWeather({ initial: 'fair', latitude: simClock.state.latitude });
+const wx = weather.uniforms;
+// 霧の昼の白み uniform を weather 側に一本化して全フォグマテリアルへ配る（applyDynamicFog 経由）
+fogUniforms.uFogBoost = wx.uFogBoost;
+fogUniforms.uFogDayColor = wx.uFogDayColor;
+weather.attachPrecip(fogUniforms);
+
 scene.add(createTerrain());
-const water = createWater(sunDirection, sharedUniforms);
+const water = createWater(sunDirection, sharedUniforms, wx);
 scene.add(water);
-scene.add(createVegetation(sharedUniforms));
-const grass = createGrassField(sharedUniforms, fogUniforms);
+scene.add(createVegetation(sharedUniforms, wx));
+const grass = createGrassField(sharedUniforms, fogUniforms, wx);
 scene.add(grass.group);
-const ambience = createAmbience();
+const ambience = createAmbience(wx);
 scene.add(ambience.group);
+scene.add(weather.group);
 
 // 天体（layer 0 で水面反射にも映る）
 const moon = createMoon(scene);
@@ -93,7 +103,7 @@ scene.add(player.controls.object);
 // 湖が見える丘の上からスタート
 player.spawn(-20, 120, { x: -150, z: 120 });
 
-const settings = createSettingsPanel({ clock: simClock, controls: player.controls, overlay });
+const settings = createSettingsPanel({ clock: simClock, controls: player.controls, overlay, weather });
 const _moonDir = new THREE.Vector3();
 
 // ポストプロセス: ブルームで太陽の照り返し・空気感を出す
@@ -393,15 +403,26 @@ renderer.setAnimationLoop(() => {
   const moonAltDeg = mh.altitude * DEG;
   const sunAltDeg = sh.altitude * DEG;
 
+  // --- 天候（実時間 dt で補間/自動遷移。skyUpdate より前に uniform を確定）---
+  weather.update(dt, { sunAltDeg, latitude, simDate, cameraPos: camera.position });
+  const wc = weather.state.current;
+
   // --- 空・ライト・フォグ・共有 uniform（水 RT より前に確定させる）---
-  skyUpdate(sunDirection, moonDir, moonAltDeg, ph.illuminatedFraction);
+  skyUpdate(sunDirection, moonDir, moonAltDeg, ph.illuminatedFraction, {
+    cloudiness: wc.cloudiness,
+    lightAtten: weather.derived.lightAtten,
+  });
   followPlayer(camera.position);
+  // 天候の後段補正（skyUpdate が露出/フォグ密度を毎フレーム代入するため必ずその後）。
+  // 霧は加算の下駄（昼の基準密度が極小なので乗算では効かない。fogBoost=1 で濃霧）
+  scene.fog.density = scene.fog.density * (1 + wc.cloudiness * 0.3 + wc.precip * 0.8) + wc.fogBoost * 0.006;
+  renderer.toneMappingExposure *= (1 - 0.3 * weather.derived.lightAtten) * (1 - 0.08 * wc.fogBoost);
   // Bloom はトーンマップ前の生 HDR に作用する。日中は閾値を高くして空も太陽スプライトも
   // ブルームさせない（太陽の白いドーム／四角アーティファクトを根本回避。太陽の輝きは
   // スプライトの高輝度＋AgX で表現）。夜は閾値を下げて月・星を淡く光らせる
   bloomPass.threshold = 0.85 + THREE.MathUtils.smoothstep(sunDirection.y, -0.02, 0.06) * 40.0;
   // 夜は Bloom を弱めて月・星をシャープに保つ。太陽が地平線を越えたら通常のグロウに戻す
-  bloomPass.strength = 0.1 + THREE.MathUtils.smoothstep(sunDirection.y, -0.03, 0.06) * 0.18;
+  bloomPass.strength = (0.1 + THREE.MathUtils.smoothstep(sunDirection.y, -0.03, 0.06) * 0.18) * (1 - 0.5 * wc.cloudiness);
 
   // --- 天体は水 RT より前に更新（反射が当該フレームの位置を捉える）---
   moon.update(camera, sunDirection, moonDir, ph.illuminatedFraction);
@@ -417,7 +438,7 @@ renderer.setAnimationLoop(() => {
 
   if (!window.__demo?.freeze) player.update(dt);
   grass.update(camera.position);
-  ambience.update(dt, time, camera.position);
+  ambience.update(dt, time, camera.position, wc);
 
   refreshEnv(time, frameMs); // 間引き PMREM（composer.render より前）
   updateLightShafts();
@@ -433,4 +454,4 @@ renderer.setAnimationLoop(() => {
 });
 
 // 動作検証用の内部フック
-window.__demo = { camera, scene, renderer, player, terrainHeight, forestDensity, simClock, bokehPass, bloomPass, composer, shaftPass, flarePass };
+window.__demo = { camera, scene, renderer, player, terrainHeight, forestDensity, simClock, weather, bokehPass, bloomPass, composer, shaftPass, flarePass };

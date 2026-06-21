@@ -85,7 +85,7 @@ function createClumpGeometry(seed) {
   return BufferGeometryUtils.mergeGeometries(blades);
 }
 
-function createGrassMaterial(uniforms, fogUniforms) {
+function createGrassMaterial(uniforms, fogUniforms, weatherUniforms) {
   // Phong で弱い艶を持たせ、風で揺れたとき穂が鈍く光る
   const material = new THREE.MeshPhongMaterial({
     color: 0xffffff,
@@ -110,12 +110,17 @@ function createGrassMaterial(uniforms, fogUniforms) {
       shader.uniforms.uFogNight = fogUniforms.uFogNight;
       shader.uniforms.uFogNightColor = fogUniforms.uFogNightColor;
     }
+    // 天候: 風の強弱（突風で草が大きく揺れる）・濡れ（暗化＋艶）
+    const hasWx = !!weatherUniforms;
+    shader.uniforms.uWindGust = hasWx ? weatherUniforms.uWindGust : { value: 0.6 };
+    shader.uniforms.uWindDir = hasWx ? weatherUniforms.uWindDir : { value: new THREE.Vector2(0.912, 0.41) };
+    shader.uniforms.uWetness = hasWx ? weatherUniforms.uWetness : { value: 0 };
 
     // 風。インスタンス変換後のワールド座標で曲げることで、
     // ブレードの向きに依存しない「草原を渡る風のうねり」を作る。
     // 穂先の度合い vTip をフラグメントへ渡し、逆光透過に使う。
     shader.vertexShader =
-      'uniform float uTime;\nuniform vec2 uPlayerPos;\nvarying float vTip;\n' +
+      'uniform float uTime;\nuniform vec2 uPlayerPos;\nuniform float uWindGust;\nuniform vec2 uWindDir;\nvarying float vTip;\n' +
       shader.vertexShader.replace(
         '#include <project_vertex>',
         `vec4 mvPosition = vec4(transformed, 1.0);
@@ -130,7 +135,9 @@ function createGrassMaterial(uniforms, fogUniforms) {
           float gust = sin(uTime * 1.4 + w.x * 0.06 + w.y * 0.045)
                      + sin(uTime * 2.3 + w.x * 0.16 - w.y * 0.11) * 0.5;
           float flutter = sin(uTime * 5.0 + w.x * 1.7 + w.y * 1.3) * 0.10;
-          mvPosition.xz += vec2(0.912, 0.41) * (gust * 0.16 + flutter) * bend;
+          // 天候の風で振幅を増幅（平常 0.6 で約 1 倍、突風 2.0 で約 2 倍）
+          float windAmp = 0.5 + uWindGust;
+          mvPosition.xz += normalize(uWindDir) * (gust * 0.16 + flutter) * bend * windAmp;
           // プレイヤーの踏み分け: 足元の草を外側へ押し倒す
           vec2 pd = w - uPlayerPos;
           float pl = length(pd);
@@ -146,7 +153,7 @@ function createGrassMaterial(uniforms, fogUniforms) {
     // 透過ローブを法線（上向き）で歪ませ、上からの光が下へ抜ける挙動を再現。
     // 穂先ほど薄いので vTip で強める。
     shader.fragmentShader =
-      'uniform vec3 uSunDir;\nuniform vec3 uSunColor;\nvarying float vTip;\n' +
+      'uniform vec3 uSunDir;\nuniform vec3 uSunColor;\nuniform float uWetness;\nvarying float vTip;\n' +
       shader.fragmentShader.replace(
         '#include <opaque_fragment>',
         `vec3 sunView = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
@@ -154,18 +161,22 @@ function createGrassMaterial(uniforms, fogUniforms) {
         vec3 transH = normalize(sunView + normal * 0.4);
         float trans = pow(clamp(dot(viewDir, -transH), 0.0, 1.0), 3.0);
         outgoingLight += uSunColor * vec3(0.55, 1.0, 0.4) * trans * vTip * 0.7;
+        // 濡れ: 暗くなり、濡れ艶（鋭いスペキュラ）が出る
+        outgoingLight *= mix(1.0, 0.78, uWetness);
+        float wspec = pow(max(dot(reflect(-sunView, normal), viewDir), 0.0), 40.0);
+        outgoingLight += uSunColor * wspec * uWetness * 0.3;
         #include <opaque_fragment>`
       );
   };
   return material;
 }
 
-export function createGrassField(uniforms, fogUniforms) {
+export function createGrassField(uniforms, fogUniforms, weatherUniforms) {
   const group = new THREE.Group();
   group.name = 'grass';
   // 株ジオメトリ 3 変種（シードを変えて構成を変える）
   const geometries = [101, 202, 303].map(createClumpGeometry);
-  const material = createGrassMaterial(uniforms, fogUniforms);
+  const material = createGrassMaterial(uniforms, fogUniforms, weatherUniforms);
 
   const tiles = new Map(); // "ix,iz" -> { meshes: InstancedMesh[], lod: 0 | 1 }
   const buildQueue = [];

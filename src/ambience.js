@@ -12,12 +12,14 @@ const rand = mulberry32(0xc10d5);
 // 雲パフ用のポイントスプライトシェーダ。
 // THREE.Sprite ではなく Points を使うのは、GTAOPass が内部の法線/深度パスで
 // Points を自動的に除外するため（Sprite は除外されず矩形のアーティファクトが出る）
-function createCloudMaterial(texture) {
+function createCloudMaterial(texture, weatherUniforms) {
+  const uniforms = THREE.UniformsUtils.merge([
+    THREE.UniformsLib.fog,
+    { uMap: { value: texture } },
+  ]);
+  uniforms.uCloudiness = weatherUniforms ? weatherUniforms.uCloudiness : { value: 0 };
   return new THREE.ShaderMaterial({
-    uniforms: THREE.UniformsUtils.merge([
-      THREE.UniformsLib.fog,
-      { uMap: { value: texture } },
-    ]),
+    uniforms,
     vertexShader: `
       attribute float aSize;
       attribute float aOpacity;
@@ -35,12 +37,16 @@ function createCloudMaterial(texture) {
       }`,
     fragmentShader: `
       uniform sampler2D uMap;
+      uniform float uCloudiness;
       varying float vOpacity;
       varying vec3 vColor;
       #include <fog_pars_fragment>
       void main() {
         vec4 tex = texture2D(uMap, gl_PointCoord);
         gl_FragColor = vec4(vColor * tex.rgb, tex.a * vOpacity);
+        // 曇天では個別のパフを溶かして灰色化（曇天ドームに馴染ませ、暗い塊を防ぐ）
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * vec3(0.62, 0.65, 0.70), uCloudiness);
+        gl_FragColor.a *= mix(1.0, 0.03, smoothstep(0.4, 0.85, uCloudiness)); // 曇天で個別の雲は溶ける
         // 雲は太陽光で照らされない固定色。日没後はすばやく暗転させ、薄明で白い塊が
         // 浮かないようにする（uFogNight は -8° で最大なので、その前半で暗くする）
         #ifdef USE_FOG
@@ -58,9 +64,9 @@ function createCloudMaterial(texture) {
   });
 }
 
-function createClouds() {
+function createClouds(weatherUniforms) {
   const group = new THREE.Group();
-  const material = createCloudMaterial(cloudPuffTexture());
+  const material = createCloudMaterial(cloudPuffTexture(), weatherUniforms);
 
   const clouds = [];
   for (let i = 0; i < 14; i++) {
@@ -103,10 +109,11 @@ function createClouds() {
     clouds.push({ mesh: cloud, speed: 1.2 + rand() * 1.6 });
   }
 
-  function update(dt) {
+  function update(dt, windGust = 0.6) {
     const limit = WORLD_SIZE * 0.75;
+    const speedMul = 0.5 + windGust; // 突風で雲が速く流れる
     for (const c of clouds) {
-      c.mesh.position.x += c.speed * dt;
+      c.mesh.position.x += c.speed * dt * speedMul;
       if (c.mesh.position.x > limit) c.mesh.position.x = -limit;
     }
   }
@@ -250,17 +257,23 @@ function createButterflies() {
 
 // ----------------------------------------------------------------
 
-export function createAmbience() {
+export function createAmbience(weatherUniforms) {
   const group = new THREE.Group();
-  const clouds = createClouds();
+  const clouds = createClouds(weatherUniforms);
   const birds = createBirds();
   const butterflies = createButterflies();
   group.add(clouds.group, birds.group, butterflies.group);
 
-  function update(dt, time, playerPos) {
-    clouds.update(dt);
-    birds.update(dt, time);
-    butterflies.update(dt, time, playerPos);
+  function update(dt, time, playerPos, weather) {
+    // 荒天度（雨・濃霧・厚い曇り）で鳥・蝶を退避させる
+    const foul = weather
+      ? THREE.MathUtils.clamp(weather.precip * 3 + Math.max(0, weather.cloudiness - 0.8) * 3 + weather.fogBoost * 1.5, 0, 1)
+      : 0;
+    clouds.update(dt, weather ? weather.windGust : 0.6);
+    birds.group.visible = foul < 0.5;
+    if (birds.group.visible) birds.update(dt, time);
+    butterflies.group.visible = foul < 0.35;
+    if (butterflies.group.visible) butterflies.update(dt, time, playerPos);
   }
 
   return { group, update };

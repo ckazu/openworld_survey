@@ -38,6 +38,8 @@ function patchFogChunks() {
   uniform vec3 uFogSunColor;
   uniform float uFogNight;
   uniform vec3 uFogNightColor;
+  uniform float uFogBoost;     // 天候: 朝靄・濃霧の昼の白み（0..1）
+  uniform vec3 uFogDayColor;   // 天候: 昼の霧の底色（白〜灰）
   #ifdef FOG_EXP2
     uniform float fogDensity;
   #else
@@ -56,7 +58,8 @@ function patchFogChunks() {
     vec3 fogView = vFogWorldPos - cameraPosition;
     float fogDist = length(fogView);
     float cosT = dot(fogView / max(fogDist, 1e-4), FOG_SUN_DIR);
-    float fogHeight = exp( -max( 0.0, vFogWorldPos.y - ${WATER_LEVEL.toFixed(2)} ) * 0.16 );
+    // 通常は低空ほど濃い（地を這う霧）。濃霧(uFogBoost)時は高さ減衰を緩めて上空まで満たす
+    float fogHeight = exp( -max( 0.0, vFogWorldPos.y - ${WATER_LEVEL.toFixed(2)} ) * 0.16 * ( 1.0 - uFogBoost * 0.78 ) );
     float dens = fogDensity * ( 1.0 + fogHeight * 1.8 );
     float bR = dens * 0.62;
     float bM = dens * 0.38;
@@ -70,6 +73,8 @@ function patchFogChunks() {
       * 6.5;
     inscatter *= ( 1.0 - uFogNight );          // 夜は橙の内散乱を消す
     inscatter += uFogNightColor * uFogNight;    // 夜の底色（真っ黒にしない）
+    // 天候の霧: 昼は白い朝靄/濃霧へ寄せる（夜は既存の紺底色のまま）
+    inscatter = mix( inscatter, uFogDayColor, uFogBoost * ( 1.0 - uFogNight ) );
     gl_FragColor.rgb = gl_FragColor.rgb * ext + inscatter * ( 1.0 - ext );
   }
   #else
@@ -89,6 +94,8 @@ export function applyDynamicFog(material, fog) {
     u.uFogSunColor = fog.uFogSunColor;
     u.uFogNight = fog.uFogNight;
     u.uFogNightColor = fog.uFogNightColor;
+    u.uFogBoost = fog.uFogBoost;
+    u.uFogDayColor = fog.uFogDayColor;
   };
   if (material.isShaderMaterial) {
     refs(material.uniforms); // すでに deep-clone 済みの uniforms へ参照を足す
@@ -211,6 +218,8 @@ export function createSky(scene, renderer, sharedUniforms) {
     uFogSunColor: { value: new THREE.Color(0, 0, 0) },
     uFogNight: { value: 0 },
     uFogNightColor: { value: new THREE.Color(0.008, 0.016, 0.035) }, // 闇に近い暗い紺（遠景を溶かす）
+    uFogBoost: { value: 0 }, // 天候で上書き（main で weatherUniforms を参照配布）
+    uFogDayColor: { value: new THREE.Color(0.62, 0.66, 0.72) },
   };
   scene.fog = new THREE.FogExp2(0xe2c8a8, 0.0014);
 
@@ -261,24 +270,26 @@ export function createSky(scene, renderer, sharedUniforms) {
 
   const _c = new THREE.Color();
 
-  // 太陽高度から各種をランプ更新する本体
-  function update(sunDir, mDir, moonAltDeg, illum) {
+  // 太陽高度から各種をランプ更新する本体。wx={cloudiness,lightAtten} で天候変調（省略可）
+  function update(sunDir, mDir, moonAltDeg, illum, wx) {
     sun.copy(sunDir);
     moonDir.copy(mDir);
     const a = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(sunDir.y, -1, 1)));
     const kAbove = kAboveHor(a);
     const kNight = fall(a, 2, -6);
+    const cloud = wx ? wx.cloudiness : 0;       // 雲量 0..1
+    const atten = wx ? wx.lightAtten : 0;       // 日射の減衰 0..1
 
-    // Sky ドーム
+    // Sky ドーム（曇天で白濁・青み抜き・暈拡大）
     const u = sky.material.uniforms;
     u.sunPosition.value.copy(sunDir);
-    u.turbidity.value = rampScalar(SKY_TURB, a);
-    u.rayleigh.value = rampScalar(SKY_RAY, a);
-    u.mieCoefficient.value = rampScalar(SKY_MIE, a);
+    u.turbidity.value = rampScalar(SKY_TURB, a) * (1 + cloud * 1.2);
+    u.rayleigh.value = rampScalar(SKY_RAY, a) * (1 - cloud * 0.4);
+    u.mieCoefficient.value = rampScalar(SKY_MIE, a) * (1 + cloud * 2.0);
 
-    // 太陽光（色・強度）
+    // 太陽光（色・強度）。曇天/降水で直射を弱める（影が薄くなる）
     sunLightColor(a, sunLight.color);
-    sunLight.intensity = rampScalar(SUN_I, a) * kAbove;
+    sunLight.intensity = rampScalar(SUN_I, a) * kAbove * (1 - 0.6 * atten);
     sunLight.visible = sunLight.intensity > 0.001;
 
     // 月光
@@ -286,9 +297,9 @@ export function createSky(scene, renderer, sharedUniforms) {
     moonLight.intensity = iMoon;
     moonLight.visible = iMoon > 0.002;
 
-    // 環境光
-    scene.environmentIntensity = rampScalar(ENV_I, a);
-    hemiLight.intensity = rampScalar(HEMI_I, a);
+    // 環境光（曇天は拡散光が微増＝柔らかい曇天光）
+    scene.environmentIntensity = rampScalar(ENV_I, a) * (1 + 0.15 * cloud);
+    hemiLight.intensity = rampScalar(HEMI_I, a) * (1 + 0.1 * cloud);
     rampColor(HEMI_SKY, a, hemiLight.color);
     rampColor(HEMI_GND, a, hemiLight.groundColor);
 

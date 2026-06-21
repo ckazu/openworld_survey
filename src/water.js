@@ -590,7 +590,7 @@ void main() {
 }
 `;
 
-function makeWaterMaterial(sharedUniforms, shoreTex, detailTex, neutral) {
+function makeWaterMaterial(sharedUniforms, shoreTex, detailTex, neutral, weatherUniforms) {
   const uniforms = THREE.UniformsUtils.merge([
     THREE.UniformsLib.fog,
     {
@@ -674,6 +674,11 @@ function makeWaterMaterial(sharedUniforms, shoreTex, detailTex, neutral) {
   // 共有 uniform は参照でエイリアス（main.js の毎フレーム更新を伝播）。uTime は絶対に共有しない
   material.uniforms.uSunDir = sharedUniforms.uSunDir;
   material.uniforms.uSunColor = sharedUniforms.uSunColor;
+  // 天候（風→波の尖り, 雨→水面の波紋）。参照エイリアスで毎フレーム伝播
+  if (weatherUniforms) {
+    material.uniforms.uChoppyScale = weatherUniforms.uChoppyScale;
+    material.uniforms.uRainRipple = weatherUniforms.uRainRipple;
+  }
 
   return material;
 }
@@ -776,13 +781,13 @@ function createShoreFoam(shoreTex) {
   return mesh;
 }
 
-export function createWater(sunDirection, sharedUniforms) {
+export function createWater(sunDirection, sharedUniforms, weatherUniforms) {
   const group = new THREE.Group();
   const shoreTex = bakeShoreMask(512);
   const detailTex = generateWaterNormals();
   const neutral = neutralTexture();
 
-  const material = makeWaterMaterial(sharedUniforms, shoreTex, detailTex, neutral);
+  const material = makeWaterMaterial(sharedUniforms, shoreTex, detailTex, neutral, weatherUniforms);
   material.uniforms.uSunDir.value.copy(sunDirection);
 
   const geometry = makeWaterGeometry();

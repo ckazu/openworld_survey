@@ -147,7 +147,10 @@ export function createMoon(scene) {
     u.uCameraPos.value.copy(camera.position);
     u.uHorizonY.value = altSin;
     u.uEarthshine.value = (1.0 - illum) * 0.04; // 暗部は夜空に溶け込む程度（新月側でのみ淡く現れる）
-    u.uOpacity.value = THREE.MathUtils.smoothstep(altSin, Math.sin((-2 * Math.PI) / 180), Math.sin((4 * Math.PI) / 180));
+    // 地平線下でフェード。さらに明るい昼空では淡くする（暗部が黒い円盤として浮くのを防ぐ）
+    const horizonFade = THREE.MathUtils.smoothstep(altSin, Math.sin((-2 * Math.PI) / 180), Math.sin((4 * Math.PI) / 180));
+    const dayFade = 1 - 0.93 * THREE.MathUtils.smoothstep(sunDir.y, 0.06, 0.25);
+    u.uOpacity.value = horizonFade * dayFade;
   }
 
   function dispose() {
