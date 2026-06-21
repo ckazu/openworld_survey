@@ -115,6 +115,7 @@ function createGrassMaterial(uniforms, fogUniforms, weatherUniforms) {
     shader.uniforms.uWindGust = hasWx ? weatherUniforms.uWindGust : { value: 0.6 };
     shader.uniforms.uWindDir = hasWx ? weatherUniforms.uWindDir : { value: new THREE.Vector2(0.912, 0.41) };
     shader.uniforms.uWetness = hasWx ? weatherUniforms.uWetness : { value: 0 };
+    shader.uniforms.uSnowCover = hasWx ? weatherUniforms.uSnowCover : { value: 0 };
 
     // 風。インスタンス変換後のワールド座標で曲げることで、
     // ブレードの向きに依存しない「草原を渡る風のうねり」を作る。
@@ -153,7 +154,7 @@ function createGrassMaterial(uniforms, fogUniforms, weatherUniforms) {
     // 透過ローブを法線（上向き）で歪ませ、上からの光が下へ抜ける挙動を再現。
     // 穂先ほど薄いので vTip で強める。
     shader.fragmentShader =
-      'uniform vec3 uSunDir;\nuniform vec3 uSunColor;\nuniform float uWetness;\nvarying float vTip;\n' +
+      'uniform vec3 uSunDir;\nuniform vec3 uSunColor;\nuniform float uWetness;\nuniform float uSnowCover;\nvarying float vTip;\n' +
       shader.fragmentShader.replace(
         '#include <opaque_fragment>',
         `vec3 sunView = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
@@ -165,6 +166,8 @@ function createGrassMaterial(uniforms, fogUniforms, weatherUniforms) {
         outgoingLight *= mix(1.0, 0.78, uWetness);
         float wspec = pow(max(dot(reflect(-sunView, normal), viewDir), 0.0), 40.0);
         outgoingLight += uSunColor * wspec * uWetness * 0.3;
+        // 積雪: 穂先ほど雪が載って白くなる
+        outgoingLight = mix(outgoingLight, vec3(0.92, 0.94, 1.0), uSnowCover * smoothstep(0.3, 1.0, vTip) * 0.85);
         #include <opaque_fragment>`
       );
   };

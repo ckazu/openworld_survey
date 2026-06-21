@@ -277,7 +277,7 @@ composer.addPass(new OutputPass());
 // （彩度・シネマトーン・ビネット・色収差・フィルムグレイン）
 const gradePass = new ShaderPass({
   name: 'ColorGradeShader',
-  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 } },
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uCold: { value: 0 } },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
     void main() {
@@ -288,6 +288,7 @@ const gradePass = new ShaderPass({
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
     uniform float uTime;
+    uniform float uCold; // 天候: 雪/寒冷で寒色へ（0..1）
     varying vec2 vUv;
     float grain(vec2 p) {
       return fract(sin(dot(p, vec2(12.9898, 78.233)) + uTime * 61.0) * 43758.5453);
@@ -309,6 +310,8 @@ const gradePass = new ShaderPass({
         1.0
       );
       float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
+      // 寒冷（雪）: 寒色へ寄せ、わずかに脱色（凍てつく空気感）
+      c.rgb = mix(c.rgb, mix(vec3(l), c.rgb * vec3(0.9, 0.97, 1.1), 0.85), uCold);
       c.rgb = mix(vec3(l), c.rgb, 1.24);            // AgX は彩度低めなので強めに補正
       c.rgb = (c.rgb - 0.5) * 1.1 + 0.5 + 0.003;    // 微コントラスト
       // シネマトーン: シャドウをわずかに持ち上げ、ハイライトを暖色へ
@@ -350,6 +353,9 @@ window.addEventListener('resize', () => {
 
 const clock = new THREE.Clock();
 let hudTimer = 0;
+// 稲妻（嵐のとき散発的に閃光）
+let lightningFlash = 0;
+let nextBolt = 6;
 
 // 光芒の太陽スクリーン座標・強度を更新（背後/画面外ではフェードアウト）
 const sunWorld = new THREE.Vector3();
@@ -421,6 +427,15 @@ renderer.setAnimationLoop(() => {
   // 霧は加算の下駄（昼の基準密度が極小なので乗算では効かない。fogBoost=1 で濃霧）
   scene.fog.density = scene.fog.density * (1 + wc.cloudiness * 0.3 + wc.precip * 0.8) + wc.fogBoost * 0.006;
   renderer.toneMappingExposure *= (1 - 0.3 * weather.derived.lightAtten) * (1 - 0.08 * wc.fogBoost);
+  // 稲妻（嵐: 雨が強く厚い雲のとき散発的に閃光 → 露出を一瞬持ち上げる）
+  if (wc.precip > 0.8 && wc.cloudiness > 0.85 && wc.precipKind < 0.5) {
+    nextBolt -= dt;
+    if (nextBolt <= 0) { lightningFlash = 1; nextBolt = 4 + Math.random() * 11; }
+  }
+  lightningFlash *= Math.exp(-dt * 7); // 速い減衰
+  renderer.toneMappingExposure *= 1 + lightningFlash * 1.4;
+  // 寒色グレーディング（雪・積雪で寒々しく）
+  gradePass.uniforms.uCold.value = Math.min(1, (wc.snowCover ?? 0) * 0.8 + wc.precipKind * wc.precip * 0.6);
   // Bloom はトーンマップ前の生 HDR に作用する。日中は閾値を高くして空も太陽スプライトも
   // ブルームさせない（太陽の白いドーム／四角アーティファクトを根本回避。太陽の輝きは
   // スプライトの高輝度＋AgX で表現）。夜は閾値を下げて月・星を淡く光らせる

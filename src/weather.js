@@ -242,14 +242,17 @@ function createOvercastDome(weatherUniforms) {
 function makeApplyWetness(weatherUniforms) {
   return function applyWetness(material) {
     if (!material || material.userData.__wet) return material;
-    if (material.isShaderMaterial) return material; // 草など独自シェーダは個別対応
+    // 濡れ/積雪は法線・roughness を使うため MeshStandard 系のみ対象
+    // （MeshBasic=鳥/蝶 や MeshLambert=花、独自 ShaderMaterial は除外）
+    if (!material.isMeshStandardMaterial) return material;
     material.userData.__wet = true;
     const prev = material.onBeforeCompile;
     material.onBeforeCompile = function (shader, renderer) {
       if (prev) prev.call(this, shader, renderer);
       shader.uniforms.uWetness = weatherUniforms.uWetness;
+      shader.uniforms.uSnowCover = weatherUniforms.uSnowCover;
       shader.fragmentShader =
-        'uniform float uWetness;\n' +
+        'uniform float uWetness;\nuniform float uSnowCover;\n' +
         shader.fragmentShader
           .replace(
             '#include <roughnessmap_fragment>',
@@ -258,6 +261,14 @@ function makeApplyWetness(weatherUniforms) {
           .replace(
             '#include <color_fragment>',
             '#include <color_fragment>\n  diffuseColor.rgb *= mix(1.0, 0.72, uWetness);'
+          )
+          .replace(
+            '#include <opaque_fragment>',
+            // 上向き面に雪を積もらせる（ワールド法線の上成分でマスク）
+            `float snowUp = (vec4(normalize(normal), 0.0) * viewMatrix).y;
+            float snowMask = uSnowCover * smoothstep(0.35, 0.72, snowUp);
+            outgoingLight = mix(outgoingLight, vec3(0.90, 0.93, 1.0) * (0.55 + 0.45 * clamp(snowUp,0.0,1.0)), snowMask);
+            #include <opaque_fragment>`
           );
     };
     material.needsUpdate = true;
@@ -361,6 +372,11 @@ export function createWeather({ rand = Math.random, initial = 'fair', latitude =
     const wetTau = rainAmount > current.wetness ? 3.0 : 60.0;
     current.wetness = (current.wetness ?? 0) + (rainAmount - (current.wetness ?? 0)) * (1 - Math.exp(-dt / wetTau));
 
+    // snowCover: 雪が降ると上面に積もり、止むとゆっくり融ける（非対称積分）
+    const snowing = current.precip * current.precipKind > 0.05 ? 1 : 0;
+    const snowTau = snowing ? 18.0 : 120.0;
+    current.snowCover = (current.snowCover ?? 0) + (snowing - (current.snowCover ?? 0)) * (1 - Math.exp(-dt / snowTau));
+
     deriveWeather(current, derived);
 
     // --- uniform 反映 ---
@@ -371,6 +387,7 @@ export function createWeather({ rand = Math.random, initial = 'fair', latitude =
     weatherUniforms.uWetness.value = current.wetness;
     weatherUniforms.uWindGust.value = current.windGust;
     weatherUniforms.uChoppyScale.value = 1 + current.windGust * 0.5;
+    weatherUniforms.uSnowCover.value = current.snowCover ?? 0;
     weatherUniforms.uFogBoost.value = current.fogBoost;
     weatherUniforms.uDaylight.value = ctx ? THREE.MathUtils.smoothstep(ctx.sunAltDeg, -8, 6) : 1;
     weatherUniforms.uTime.value += dt; // 降水は実時間
