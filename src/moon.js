@@ -132,10 +132,12 @@ export function createMoon(scene) {
 
   const _pos = new THREE.Vector3();
 
-  function update(camera, sunDir, moonDir, illum) {
+  function update(camera, sunDir, moonDir, illum, cloudiness = 0) {
     const altSin = moonDir.y;
-    // 地平線下では非表示
-    mesh.visible = altSin > Math.sin((-3 * Math.PI) / 180);
+    // 曇天では雲に隠れる
+    const cloudFade = 1 - THREE.MathUtils.smoothstep(cloudiness, 0.35, 0.9);
+    // 地平線下では非表示。曇天で完全に隠れたら描画しない
+    mesh.visible = altSin > Math.sin((-3 * Math.PI) / 180) && cloudFade > 0.01;
     if (!mesh.visible) return;
 
     _pos.copy(camera.position).addScaledVector(moonDir, MOON_DISTANCE);
@@ -147,7 +149,10 @@ export function createMoon(scene) {
     u.uCameraPos.value.copy(camera.position);
     u.uHorizonY.value = altSin;
     u.uEarthshine.value = (1.0 - illum) * 0.04; // 暗部は夜空に溶け込む程度（新月側でのみ淡く現れる）
-    u.uOpacity.value = THREE.MathUtils.smoothstep(altSin, Math.sin((-2 * Math.PI) / 180), Math.sin((4 * Math.PI) / 180));
+    // 地平線下でフェード。さらに明るい昼空では淡くする（暗部が黒い円盤として浮くのを防ぐ）
+    const horizonFade = THREE.MathUtils.smoothstep(altSin, Math.sin((-2 * Math.PI) / 180), Math.sin((4 * Math.PI) / 180));
+    const dayFade = 1 - 0.93 * THREE.MathUtils.smoothstep(sunDir.y, 0.06, 0.25);
+    u.uOpacity.value = horizonFade * dayFade * cloudFade;
   }
 
   function dispose() {

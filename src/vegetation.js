@@ -6,6 +6,9 @@ import { barkNormalMap, rockNormalMap, rockRoughnessMap, leafClusterTexture, bro
 
 const rand = mulberry32(20260611);
 
+// 天候の風 uniform（createVegetation で設定。leafMaterial が参照）
+let _weatherUniforms = null;
+
 // 頂点を法線方向にノイズで変位させ、有機的なシルエットにする
 function displace(geometry, amount, freq, seed = 0) {
   geometry.computeVertexNormals();
@@ -68,11 +71,12 @@ function leafMaterial(uniforms, extra = {}) {
     shader.uniforms.uSunDir = uniforms.uSunDir;
     shader.uniforms.uSunColor = uniforms.uSunColor;
     shader.uniforms.uTime = uniforms.uTime;
+    shader.uniforms.uWindGust = _weatherUniforms ? _weatherUniforms.uWindGust : { value: 0.6 };
     // 階層的な風（GPU Gems 3, Crysis）: ①樹全体の大曲げ（ワールド座標の gust）
     // ②枝（タフト）単位の位相差スウェイ ③葉の高周波フラッター の 3 階層合成。
-    // aWind = (タフト位相, 幹からの距離による重み)
+    // aWind = (タフト位相, 幹からの距離による重み)。天候の uWindGust で振幅を増幅
     shader.vertexShader =
-      'uniform float uTime;\nattribute vec2 aWind;\n' +
+      'uniform float uTime;\nuniform float uWindGust;\nattribute vec2 aWind;\n' +
       shader.vertexShader.replace(
         '#include <project_vertex>',
         `vec4 mvPosition = vec4(transformed, 1.0);
@@ -89,9 +93,10 @@ function leafMaterial(uniforms, extra = {}) {
           float branch = sin(uTime * 2.2 + aWind.x) * aWind.y;
           // ③ 葉のフラッター（高周波・微小）
           float flutter = sin(uTime * 6.5 + aWind.x * 3.0 + position.x * 5.0 + position.y * 4.0);
+          float windAmp = 0.5 + uWindGust; // 平常 0.6 で約1倍、突風 2.0 で約2.5倍
           mvPosition.xz += vec2(0.912, 0.41)
-            * (gust * 0.08 * hgt + branch * 0.06 + flutter * 0.015 * aWind.y);
-          mvPosition.y += branch * 0.02 + flutter * 0.008;
+            * (gust * 0.08 * hgt + branch * 0.06 + flutter * 0.015 * aWind.y) * windAmp;
+          mvPosition.y += (branch * 0.02 + flutter * 0.008) * windAmp;
         }
         mvPosition = modelViewMatrix * mvPosition;
         gl_Position = projectionMatrix * mvPosition;`
@@ -762,7 +767,8 @@ function createFlowers() {
   return group;
 }
 
-export function createVegetation(uniforms) {
+export function createVegetation(uniforms, weatherUniforms) {
+  _weatherUniforms = weatherUniforms || null;
   const group = new THREE.Group();
   group.add(createConifers(uniforms));
   group.add(createBroadleaves(uniforms));

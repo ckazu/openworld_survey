@@ -319,3 +319,54 @@ export function grassBladeTexture() {
   _grassBlade.colorSpace = THREE.SRGBColorSpace;
   return _grassBlade;
 }
+
+let _rainStreak = null;
+
+// 雨粒: 縦長の細いストリーク（上下に淡くフェード、中央が明るい）。
+// 点スプライト（スクリーン整列の正方形）に貼ると縦の雨筋として読める。
+export function rainStreakTexture() {
+  if (_rainStreak) return _rainStreak;
+  const size = 64;
+  const canvas = makeCanvas(size);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, size, size);
+  // 縦方向グラデ。中央が濃く、端へ細く尾を引く（モーションブラーの雨筋）
+  const grad = ctx.createLinearGradient(0, 0, 0, size);
+  grad.addColorStop(0.0, 'rgba(255,255,255,0)');
+  grad.addColorStop(0.18, 'rgba(255,255,255,0.55)');
+  grad.addColorStop(0.5, 'rgba(255,255,255,0.95)');
+  grad.addColorStop(0.82, 'rgba(255,255,255,0.55)');
+  grad.addColorStop(1.0, 'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  // 細い縦帯（横方向はソフトに）。中央 ~8% 幅で細い筋に
+  const w = size * 0.09;
+  ctx.filter = 'blur(1.2px)';
+  ctx.fillRect(size * 0.5 - w / 2, 0, w, size);
+  ctx.filter = 'none';
+  _rainStreak = new THREE.CanvasTexture(canvas);
+  _rainStreak.colorSpace = THREE.SRGBColorSpace;
+  return _rainStreak;
+}
+
+let _snowFlake = null;
+
+// 雪片: 中心が明るく外周へ滑らかに消える丸いソフトドット。
+export function snowFlakeTexture() {
+  if (_snowFlake) return _snowFlake;
+  const size = 64;
+  const canvas = makeCanvas(size);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, size, size);
+  const r = size * 0.5;
+  const grad = ctx.createRadialGradient(r, r, 0, r, r, r);
+  grad.addColorStop(0.0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.5, 'rgba(255,255,255,0.6)');
+  grad.addColorStop(1.0, 'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(r, r, r, 0, Math.PI * 2);
+  ctx.fill();
+  _snowFlake = new THREE.CanvasTexture(canvas);
+  _snowFlake.colorSpace = THREE.SRGBColorSpace;
+  return _snowFlake;
+}

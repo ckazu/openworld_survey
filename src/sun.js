@@ -100,17 +100,19 @@ export function createSun(scene) {
 
   const _pos = new THREE.Vector3();
 
-  function update(camera, sunDir, sunAltDeg) {
-    // 地平線のわずか下から消える（薄明の名残は Sky 側）
-    mesh.visible = sunDir.y > Math.sin((-1.5 * Math.PI) / 180);
+  function update(camera, sunDir, sunAltDeg, cloudiness = 0) {
+    // 曇天では雲に隠れて太陽円盤は見えなくなる
+    const cloudFade = 1 - THREE.MathUtils.smoothstep(cloudiness, 0.35, 0.9);
+    // 地平線のわずか下から消える（薄明の名残は Sky 側）。曇天で完全に隠れたら描画しない
+    mesh.visible = sunDir.y > Math.sin((-1.5 * Math.PI) / 180) && cloudFade > 0.01;
     if (!mesh.visible) return;
     _pos.copy(camera.position).addScaledVector(sunDir, SUN_DIST);
     mesh.position.copy(_pos);
     mesh.lookAt(camera.position);
     rampRGB(CORE, sunAltDeg, material.uniforms.uCore.value);
     rampRGB(GLOW, sunAltDeg, material.uniforms.uGlow.value);
-    // 低空ほどやや弱める（地平線の大気減衰）
-    material.uniforms.uIntensity.value = 0.6 + 0.4 * THREE.MathUtils.smoothstep(sunAltDeg, 0, 12);
+    // 低空ほどやや弱める（地平線の大気減衰）。曇天でフェード
+    material.uniforms.uIntensity.value = (0.6 + 0.4 * THREE.MathUtils.smoothstep(sunAltDeg, 0, 12)) * cloudFade;
   }
 
   function dispose() {

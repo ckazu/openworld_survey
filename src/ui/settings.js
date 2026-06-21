@@ -1,4 +1,5 @@
 import { SPEED_PRESETS, CITY_PRESETS } from '../clock.js';
+import { WEATHER_LABELS } from '../weather.js';
 
 // 画面上の設定パネル（依存追加なし・既存のダーク基調に合わせる）。
 // 緯度・経度・日時・速度倍率・一時停止を操作。KeyO で開閉し、開くとポインタロックを解除。
@@ -45,9 +46,11 @@ const CSS = `
   color: #e8f1f5; font-size: 12px; }
 #settings button:hover { background: rgba(255,255,255,0.18); }
 #settings .hint { margin-top: 10px; font-size: 11px; opacity: 0.6; }
+#settings hr { border: none; border-top: 1px solid rgba(255,255,255,0.12); margin: 14px 0 10px; }
+#settings .wx-manual[disabled-group] { opacity: 0.4; pointer-events: none; }
 `;
 
-export function createSettingsPanel({ clock, controls, overlay }) {
+export function createSettingsPanel({ clock, controls, overlay, weather }) {
   const style = document.createElement('style');
   style.textContent = CSS;
   document.head.appendChild(style);
@@ -84,6 +87,23 @@ export function createSettingsPanel({ clock, controls, overlay }) {
       <button id="st-now">現在時刻</button>
       <button id="st-pause">一時停止</button>
     </div>
+    <hr>
+    <h2>🌦 天候</h2>
+    <div class="row">
+      <label>モード</label>
+      <select id="wx-mode"><option value="auto">自動</option><option value="manual">手動</option></select>
+    </div>
+    <div class="row">
+      <label>天候 <span id="wx-now"></span></label>
+      <select id="wx-preset" class="wx-manual">${Object.entries(WEATHER_LABELS).map(
+        ([k, label]) => `<option value="${k}">${label}</option>`
+      ).join('')}</select>
+    </div>
+    <div class="row"><label>強度 <span id="wx-int-v"></span></label><input id="wx-int" class="wx-manual" type="range" min="0" max="1.5" step="0.01"></div>
+    <div class="row"><label>雲量 <span id="wx-cloud-v"></span></label><input id="wx-cloud" class="wx-manual" type="range" min="0" max="1" step="0.01"></div>
+    <div class="row"><label>降水 <span id="wx-precip-v"></span></label><input id="wx-precip" class="wx-manual" type="range" min="0" max="1" step="0.01"></div>
+    <div class="row"><label>霧 <span id="wx-fog-v"></span></label><input id="wx-fog" class="wx-manual" type="range" min="0" max="1" step="0.01"></div>
+    <div class="row"><label>風 <span id="wx-wind-v"></span></label><input id="wx-wind" class="wx-manual" type="range" min="0" max="2" step="0.01"></div>
     <div class="hint">O キーで開閉</div>`;
   document.body.appendChild(el);
 
@@ -97,6 +117,39 @@ export function createSettingsPanel({ clock, controls, overlay }) {
   const cityEl = $('#st-city');
   const pauseEl = $('#st-pause');
 
+  // 天候 UI 要素
+  const wxModeEl = $('#wx-mode');
+  const wxPresetEl = $('#wx-preset');
+  const wxNowEl = $('#wx-now');
+  const wxIntEl = $('#wx-int');
+  const wxCloudEl = $('#wx-cloud');
+  const wxPrecipEl = $('#wx-precip');
+  const wxFogEl = $('#wx-fog');
+  const wxWindEl = $('#wx-wind');
+  const wxManual = [...el.querySelectorAll('.wx-manual')];
+
+  function syncWeather() {
+    if (!weather) return;
+    const auto = weather.getMode() === 'auto';
+    wxModeEl.value = auto ? 'auto' : 'manual';
+    wxNowEl.textContent = auto ? `（自動: ${weather.getCurrentLabel()}）` : '';
+    // 手動操作群は自動時にグレーアウト
+    for (const e of wxManual) e.disabled = auto;
+    // スライダ/プリセットは編集中でなければ current に追従
+    const c = weather.state.current;
+    if (document.activeElement !== wxPresetEl) wxPresetEl.value = weather.state.preset;
+    const setRange = (e, span, v, fmt) => {
+      if (document.activeElement !== e) e.value = v;
+      span.textContent = fmt(parseFloat(e.value));
+    };
+    setRange(wxCloudEl, $('#wx-cloud-v'), c.cloudiness, (x) => `${Math.round(x * 100)}%`);
+    setRange(wxPrecipEl, $('#wx-precip-v'), c.precip, (x) => `${Math.round(x * 100)}%`);
+    setRange(wxFogEl, $('#wx-fog-v'), c.fogBoost, (x) => `${Math.round(x * 100)}%`);
+    setRange(wxWindEl, $('#wx-wind-v'), c.windGust, (x) => x.toFixed(2));
+    if (document.activeElement !== wxIntEl && wxIntEl.value === '') wxIntEl.value = '1';
+    $('#wx-int-v').textContent = `${parseFloat(wxIntEl.value || '1').toFixed(2)}×`;
+  }
+
   function syncFromState() {
     const s = clock.state;
     latEl.value = s.latitude;
@@ -106,6 +159,17 @@ export function createSettingsPanel({ clock, controls, overlay }) {
     speedEl.value = String(s.speedMultiplier);
     pauseEl.textContent = s.paused ? '再開' : '一時停止';
     if (document.activeElement !== dateEl) dateEl.value = dateToLocalInput(s.simDate, s.longitude);
+    syncWeather();
+  }
+
+  if (weather) {
+    wxModeEl.addEventListener('change', () => { weather.setMode(wxModeEl.value); syncWeather(); });
+    wxPresetEl.addEventListener('change', () => { weather.setPreset(wxPresetEl.value); syncWeather(); });
+    wxIntEl.addEventListener('input', () => { weather.setIntensity(parseFloat(wxIntEl.value)); syncWeather(); });
+    wxCloudEl.addEventListener('input', () => weather.setParam('cloudiness', parseFloat(wxCloudEl.value)));
+    wxPrecipEl.addEventListener('input', () => weather.setParam('precip', parseFloat(wxPrecipEl.value)));
+    wxFogEl.addEventListener('input', () => weather.setParam('fogBoost', parseFloat(wxFogEl.value)));
+    wxWindEl.addEventListener('input', () => weather.setParam('windGust', parseFloat(wxWindEl.value)));
   }
 
   latEl.addEventListener('input', () => {
