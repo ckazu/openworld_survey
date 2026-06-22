@@ -530,6 +530,9 @@ void main() {
   float horizonFade = smoothstep(0.97, 1.0, reflUV.y);
   reflCol = mix(reflCol, uHorizonSky, horizonFade);
   reflCol = mix(uHorizonSky, reflCol, reflValid ? 1.0 : 0.0);
+  // 夜は反射を大きく暗くする。uHorizonSky（昼の青）フォールバックや明るい空の反射で
+  // 湖だけが青くくっきり浮くのを防ぐ。実際の夜空・月の反射は薄く残る
+  reflCol *= mix(1.0, 0.13, uFogNight);
 
   // ---- (5) 屈折サンプル + 水柱 ----
   // 水深はショアマスク（静的バシメトリ=正確）から取る。斜めクリップで歪む深度テクスチャの
