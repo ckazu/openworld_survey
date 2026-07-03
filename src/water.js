@@ -530,6 +530,9 @@ void main() {
   float horizonFade = smoothstep(0.97, 1.0, reflUV.y);
   reflCol = mix(reflCol, uHorizonSky, horizonFade);
   reflCol = mix(uHorizonSky, reflCol, reflValid ? 1.0 : 0.0);
+  // 夜は反射を大きく暗くする。uHorizonSky（昼の青）フォールバックや明るい空の反射で
+  // 湖だけが青くくっきり浮くのを防ぐ。実際の夜空・月の反射は薄く残る
+  reflCol *= mix(1.0, 0.13, uFogNight);
 
   // ---- (5) 屈折サンプル + 水柱 ----
   // 水深はショアマスク（静的バシメトリ=正確）から取る。斜めクリップで歪む深度テクスチャの
@@ -786,7 +789,10 @@ function createShoreFoam(shoreTex) {
         float sparkle = 0.45 + 0.55 * fnoise(vWorld * 6.0 + uTime * 0.4);
         // 夜は広い波頭の帯（灰色ローブ）を消し、水際の細い縁だけ淡く残す
         float waveK = mix(1.0, 0.0, uFogNight);
-        float a = clamp(edge * 0.7 + wave * 0.35 * waveK, 0.0, 1.0) * sparkle;
+        // 連続した白い縁取りは不自然なので、縁はノイズで斑にして控えめに。
+        // 打ち寄せる波（wave）の泡を主役にする
+        float edgeBreak = 0.30 + 0.70 * fnoise(vWorld * 2.3 + uTime * 0.08);
+        float a = clamp(edge * 0.26 * edgeBreak + wave * 0.5 * waveK, 0.0, 1.0) * sparkle;
         if (a < 0.01) discard;
         float nf = mix(1.0, 0.18, uFogNight);
         gl_FragColor = vec4(vec3(0.93, 0.96, 0.97) * nf, a * 0.6 * mix(1.0, 0.4, uFogNight));
